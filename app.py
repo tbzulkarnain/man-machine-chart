@@ -1,32 +1,27 @@
 import streamlit as st
 import pandas as pd
-import plotly.express as px
-import math
+import io
 
 st.set_page_config(page_title="Man-Machine Chart Builder", layout="wide")
 
-st.title("⚙️ Man-Machine Chart Builder")
-st.caption("Aplikasi Industrial Engineering untuk analisis alur kerja & optimasi jumlah mesin per operator")
+st.title("⚙️ Man-Machine Process Sheet & Costing")
+st.caption("Aplikasi pembuatan Multi-Man-Machine Process Sheet & Export Excel")
 
 st.markdown("""
 **Petunjuk:** 
-1. Isi tabel di bawah ini secara langsung seperti di Excel.
-2. Pilih pelaku: **Man**, **Machine**, atau **Both** (misal: Loading/Unloading).
-3. Hasil kalkulasi utilisasi & estimasi jumlah mesin ideal akan dihitung otomatis.
+1. Isi tabel proses kerja di bawah ini.
+2. Klik tombol **Download Process Sheet (.xlsx)** untuk mengunduh hasilnya dalam format tabel Excel rapi.
 """)
 
-# --- PREPARE DEFAULT DATA ---
+# --- DEFAULT DATA ---
 default_data = [
-    {"Process": "Loading Material", "Duration": 10, "Actor": "Both"},
-    {"Process": "Auto Cutting", "Duration": 40, "Actor": "Machine"},
-    {"Process": "Prepare Next Lot", "Duration": 10, "Actor": "Man"},
-    {"Process": "Unloading Material", "Duration": 10, "Actor": "Both"},
-    {"Process": "", "Duration": 0, "Actor": "Man"},
-    {"Process": "", "Duration": 0, "Actor": "Man"},
-    {"Process": "", "Duration": 0, "Actor": "Man"},
-    {"Process": "", "Duration": 0, "Actor": "Man"},
-    {"Process": "", "Duration": 0, "Actor": "Man"},
-    {"Process": "", "Duration": 0, "Actor": "Man"},
+    {"Process": "Loading Component Mold 1#", "Duration": 29.86, "Actor": "Both"},
+    {"Process": "Close Mold 1# & Loading Hot MC", "Duration": 12.19, "Actor": "Machine"},
+    {"Process": "Heat Pressing Mold 1#", "Duration": 97.64, "Actor": "Machine"},
+    {"Process": "Unloading & Move to Cold MC", "Duration": 6.99, "Actor": "Both"},
+    {"Process": "Cold Pressing Mold 1#", "Duration": 59.59, "Actor": "Machine"},
+    {"Process": "", "Duration": 0.0, "Actor": "Man"},
+    {"Process": "", "Duration": 0.0, "Actor": "Man"},
 ]
 
 df_default = pd.DataFrame(default_data)
@@ -36,145 +31,70 @@ edited_df = st.data_editor(
     df_default,
     num_rows="dynamic",
     column_config={
-        "Process": st.column_config.TextColumn(
-            "Nama Proses",
-            help="Isi nama langkah/proses kerja",
-            width="large"
-        ),
-        "Duration": st.column_config.NumberColumn(
-            "Waktu (detik)",
-            help="Durasi proses dalam detik",
-            min_value=0,
-            default=0,
-            width="medium"
-        ),
-        "Actor": st.column_config.SelectboxColumn(
-            "Pelaku",
-            help="Pilih siapa yang melakukan proses",
-            options=["Man", "Machine", "Both"],
-            default="Man",
-            width="medium"
-        )
+        "Process": st.column_config.TextColumn("Nama Proses / Activity", width="large"),
+        "Duration": st.column_config.NumberColumn("Waktu / Time (detik)", min_value=0.0, format="%.2f", width="medium"),
+        "Actor": st.column_config.SelectboxColumn("Pelaku / Resource", options=["Man", "Machine", "Both"], width="medium")
     },
     hide_index=True,
     use_container_width=True
 )
 
-# --- FILTER & HITUNG LOGIKA IE ---
+# --- PROCESSING DATA FOR MULTI-COLUMN EXCEL ---
 valid_rows = edited_df[
     (edited_df["Process"].str.strip() != "") & 
     (edited_df["Duration"] > 0)
 ].to_dict("records")
 
 if valid_rows:
-    timeline_data = []
-    current_time = 0
-    
-    # Inisialisasi variabel untuk rumus N
-    total_l = 0  # Loading & Unloading (Both)
-    total_m = 0  # Machine running alone
-    total_manual_man = 0 # Man working alone
-    
+    excel_rows = []
+    current_time = 0.0
+
     for item in valid_rows:
         proc = item["Process"]
         dur = item["Duration"]
         act = item["Actor"]
         
-        start = current_time
-        finish = start + dur
+        current_time += dur
         
+        # Logika pembagian kolom Man & Machine
         if act == "Both":
-            timeline_data.append({"Actor": "Man", "Process": proc, "Start": start, "Finish": finish, "Duration": dur, "Type": "Working"})
-            timeline_data.append({"Actor": "Machine", "Process": proc, "Start": start, "Finish": finish, "Duration": dur, "Type": "Working"})
-            total_l += dur
+            man_proc = proc
+            mc_proc = proc
         elif act == "Man":
-            timeline_data.append({"Actor": "Man", "Process": proc, "Start": start, "Finish": finish, "Duration": dur, "Type": "Working"})
-            timeline_data.append({"Actor": "Machine", "Process": f"Idle ({proc})", "Start": start, "Finish": finish, "Duration": dur, "Type": "Idle"})
-            total_manual_man += dur
+            man_proc = proc
+            mc_proc = "idle / waiting"
         elif act == "Machine":
-            timeline_data.append({"Actor": "Machine", "Process": proc, "Start": start, "Finish": finish, "Duration": dur, "Type": "Working"})
-            timeline_data.append({"Actor": "Man", "Process": f"Idle ({proc})", "Start": start, "Finish": finish, "Duration": dur, "Type": "Idle"})
-            total_m += dur
-            
-        current_time = finish
+            man_proc = "idle / waiting"
+            mc_proc = proc
 
-    chart_df = pd.DataFrame(timeline_data)
-    total_cycle_time = current_time
+        excel_rows.append({
+            "Time (Accumulated)": round(current_time, 2),
+            "Operator Process": man_proc,
+            "Operator Time (s)": dur,
+            "Machine Process": mc_proc,
+            "Machine Time (s)": dur
+        })
 
-    # --- KALKULASI METRIK ---
-    man_work = chart_df[(chart_df["Actor"] == "Man") & (chart_df["Type"] == "Working")]["Duration"].sum()
-    mc_work = chart_df[(chart_df["Actor"] == "Machine") & (chart_df["Type"] == "Working")]["Duration"].sum()
-
-    man_util = (man_work / total_cycle_time * 100) if total_cycle_time > 0 else 0
-    mc_util = (mc_work / total_cycle_time * 100) if total_cycle_time > 0 else 0
+    result_df = pd.DataFrame(excel_rows)
 
     st.markdown("---")
-    
-    # --- DASHBOARD METRICS ---
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Total Cycle Time", f"{total_cycle_time} detik")
-    c2.metric("Utilisasi Man", f"{man_util:.1f}%")
-    c3.metric("Utilisasi Machine", f"{mc_util:.1f}%")
+    st.subheader("📋 Hasil Process Sheet")
+    st.dataframe(result_df, use_container_width=True)
 
-    # --- VISUALISASI CHART ---
-    st.subheader("📊 Man-Machine Chart (Otomatis)")
+    # --- FUNCTION EXPORT EXCEL ---
+    buffer = io.BytesIO()
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        result_df.to_excel(writer, index=False, sheet_name="Man-Machine Sheet")
     
-    color_map = {"Working": "#1f77b4", "Idle": "#d62728"}
-    
-    # Konversi detik ke format datetime dummy agar Plotly timeline bisa baca dengan benar
-    chart_df["Start_dt"] = pd.to_datetime(chart_df["Start"], unit="s", origin="2000-01-01")
-    chart_df["Finish_dt"] = pd.to_datetime(chart_df["Finish"], unit="s", origin="2000-01-01")
-    
-    fig = px.timeline(
-        chart_df,
-        x_start="Start_dt",
-        x_end="Finish_dt",
-        y="Actor",
-        color="Type",
-        hover_data=["Process", "Duration"],
-        color_discrete_map=color_map,
+    excel_data = buffer.getvalue()
+
+    # --- TOMBOL DOWNLOAD ---
+    st.download_button(
+        label="📥 Download Process Sheet (.xlsx)",
+        data=excel_data,
+        file_name="Man_Machine_Process_Sheet.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
-    
-    fig.update_yaxes(autorange="reversed")
-    # Format sumbu X supaya nampilin angka detik, bukan tanggal
-    fig.update_xaxes(tickformat="%S", title_text="Waktu (detik)")
-    fig.update_layout(yaxis_title="Resource", height=300)
-    
-    st.plotly_chart(fig, use_container_width=True)
-
-    # --- FITUR ADVANCED: ESTIMASI MESIN IDEAL ---
-    st.markdown("---")
-    st.subheader("🧮 Analisis Manning Ratio (Jumlah Mesin Ideal)")
-    
-    col_input, col_result = st.columns([1, 2])
-    
-    with col_input:
-        travel_time = st.number_input(
-            "Waktu Perpindahan Antar Mesin (detik)", 
-            min_value=0, 
-            value=2,
-            help="Estimasi waktu operator berjalan/pindah dari mesin 1 ke mesin berikutnya"
-        )
-    
-    # Rumus Man-Machine Ratio: N = (l + m) / (l + w)
-    denominator = total_l + travel_time
-    if denominator > 0:
-        n_raw = (total_l + total_m) / denominator
-        n_floor = math.floor(n_raw) # Pembulatan ke bawah (Max Machine tanpa idle operator)
-        n_ceil = math.ceil(n_raw)   # Pembulatan ke atas
-    else:
-        n_raw = 1
-        n_floor = 1
-        n_ceil = 1
-
-    with col_result:
-        st.info(f"""
-        **Hasil Perhitungan Man-Machine Ratio ($N$):**
-        *   **Rasio Teoritis ($N$):** `{n_raw:.2f}` Mesin
-        *   **Rekomendasi Jumlah Mesin Ideal:** **{n_floor} Mesin** per 1 Operator.
-        
-        *Catatan:* Jika memegang **{n_floor} mesin**, operator tidak akan menunggu mesin (*zero worker idle*). Jika memegang **{n_ceil} mesin**, utilisasi operator mencapai 100% namun mesin akan mengalami sedikit waktu tunggu.
-        """)
 
 else:
-    st.info("Ketik nama proses dan durasi di tabel atas untuk melihat chart & analisis.")
+    st.info("Ketik nama proses dan durasi di tabel atas untuk membuat Process Sheet.")
