@@ -1,24 +1,25 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
+import math
 
 st.set_page_config(page_title="Man-Machine Chart Builder", layout="wide")
 
 st.title("⚙️ Man-Machine Chart Builder")
-st.caption("Aplikasi simpel Industrial Engineering untuk analisis alur kerja Operator & Mesin")
+st.caption("Aplikasi Industrial Engineering untuk analisis alur kerja & optimasi jumlah mesin per operator")
 
 st.markdown("""
 **Petunjuk:** 
 1. Isi tabel di bawah ini secara langsung seperti di Excel.
-2. Pilih pelaku: **Man**, **Machine**, atau **Both** (keduanya).
-3. Kamu bisa menambah baris baru di bagian bawah tabel jika 10 baris kurang.
+2. Pilih pelaku: **Man**, **Machine**, atau **Both** (misal: Loading/Unloading).
+3. Hasil kalkulasi utilisasi & estimasi jumlah mesin ideal akan dihitung otomatis.
 """)
 
-# --- PREPARE DEFAULT DATA (10 BARIS) ---
+# --- PREPARE DEFAULT DATA ---
 default_data = [
     {"Process": "Loading Material", "Duration": 10, "Actor": "Both"},
     {"Process": "Auto Cutting", "Duration": 40, "Actor": "Machine"},
-    {"Process": "Prepare Next Lot", "Duration": 20, "Actor": "Man"},
+    {"Process": "Prepare Next Lot", "Duration": 10, "Actor": "Man"},
     {"Process": "Unloading Material", "Duration": 10, "Actor": "Both"},
     {"Process": "", "Duration": 0, "Actor": "Man"},
     {"Process": "", "Duration": 0, "Actor": "Man"},
@@ -30,10 +31,10 @@ default_data = [
 
 df_default = pd.DataFrame(default_data)
 
-# --- TABEL INTERAKTIF (BISA DI-EDIT LANGSUNG) ---
+# --- TABEL INTERAKTIF ---
 edited_df = st.data_editor(
     df_default,
-    num_rows="dynamic", # Memungkinkan user menambah/menghapus baris sesuka hati
+    num_rows="dynamic",
     column_config={
         "Process": st.column_config.TextColumn(
             "Nama Proses",
@@ -60,7 +61,6 @@ edited_df = st.data_editor(
 )
 
 # --- FILTER & HITUNG LOGIKA IE ---
-# Hanya ambil baris yang nama prosesnya diisi dan durasinya > 0
 valid_rows = edited_df[
     (edited_df["Process"].str.strip() != "") & 
     (edited_df["Duration"] > 0)
@@ -69,6 +69,11 @@ valid_rows = edited_df[
 if valid_rows:
     timeline_data = []
     current_time = 0
+    
+    # Inisialisasi variabel untuk rumus N
+    total_l = 0  # Loading & Unloading (Both)
+    total_m = 0  # Machine running alone
+    total_manual_man = 0 # Man working alone
     
     for item in valid_rows:
         proc = item["Process"]
@@ -81,12 +86,15 @@ if valid_rows:
         if act == "Both":
             timeline_data.append({"Actor": "Man", "Process": proc, "Start": start, "Finish": finish, "Duration": dur, "Type": "Working"})
             timeline_data.append({"Actor": "Machine", "Process": proc, "Start": start, "Finish": finish, "Duration": dur, "Type": "Working"})
+            total_l += dur
         elif act == "Man":
             timeline_data.append({"Actor": "Man", "Process": proc, "Start": start, "Finish": finish, "Duration": dur, "Type": "Working"})
             timeline_data.append({"Actor": "Machine", "Process": f"Idle ({proc})", "Start": start, "Finish": finish, "Duration": dur, "Type": "Idle"})
+            total_manual_man += dur
         elif act == "Machine":
             timeline_data.append({"Actor": "Machine", "Process": proc, "Start": start, "Finish": finish, "Duration": dur, "Type": "Working"})
             timeline_data.append({"Actor": "Man", "Process": f"Idle ({proc})", "Start": start, "Finish": finish, "Duration": dur, "Type": "Idle"})
+            total_m += dur
             
         current_time = finish
 
@@ -128,5 +136,39 @@ if valid_rows:
     
     st.plotly_chart(fig, use_container_width=True)
 
+    # --- FITUR ADVANCED: ESTIMASI MESIN IDEAL ---
+    st.markdown("---")
+    st.subheader("🧮 Analisis Manning Ratio (Jumlah Mesin Ideal)")
+    
+    col_input, col_result = st.columns([1, 2])
+    
+    with col_input:
+        travel_time = st.number_input(
+            "Waktu Perpindahan Antar Mesin (detik)", 
+            min_value=0, 
+            value=2,
+            help="Estimasi waktu operator berjalan/pindah dari mesin 1 ke mesin berikutnya"
+        )
+    
+    # Rumus Man-Machine Ratio: N = (l + m) / (l + w)
+    denominator = total_l + travel_time
+    if denominator > 0:
+        n_raw = (total_l + total_m) / denominator
+        n_floor = math.floor(n_raw) # Pembulatan ke bawah (Max Machine tanpa idle operator)
+        n_ceil = math.ceil(n_raw)   # Pembulatan ke atas
+    else:
+        n_raw = 1
+        n_floor = 1
+        n_ceil = 1
+
+    with col_result:
+        st.info(f"""
+        **Hasil Perhitungan Man-Machine Ratio ($N$):**
+        *   **Rasio Teoritis ($N$):** `{n_raw:.2f}` Mesin
+        *   **Rekomendasi Jumlah Mesin Ideal:** **{n_floor} Mesin** per 1 Operator.
+        
+        *Catatan:* Jika memegang **{n_floor} mesin**, operator tidak akan menunggu mesin (*zero worker idle*). Jika memegang **{n_ceil} mesin**, utilisasi operator mencapai 100% namun mesin akan mengalami sedikit waktu tunggu.
+        """)
+
 else:
-    st.info("Ketik nama proses dan durasi di tabel atas untuk melihat chart.")
+    st.info("Ketik nama proses dan durasi di tabel atas untuk melihat chart & analisis.")
