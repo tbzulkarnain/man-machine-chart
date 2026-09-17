@@ -121,10 +121,14 @@ if valid_rows:
     
     color_map = {"Working": "#1f77b4", "Idle": "#d62728"}
     
+    # Konversi detik ke format datetime dummy agar Plotly timeline bisa baca dengan benar
+    chart_df["Start_dt"] = pd.to_datetime(chart_df["Start"], unit="s", origin="2000-01-01")
+    chart_df["Finish_dt"] = pd.to_datetime(chart_df["Finish"], unit="s", origin="2000-01-01")
+    
     fig = px.timeline(
         chart_df,
-        x_start="Start",
-        x_end="Finish",
+        x_start="Start_dt",
+        x_end="Finish_dt",
         y="Actor",
         color="Type",
         hover_data=["Process", "Duration"],
@@ -132,7 +136,9 @@ if valid_rows:
     )
     
     fig.update_yaxes(autorange="reversed")
-    fig.update_layout(xaxis_title="Waktu (detik)", yaxis_title="Resource", height=300)
+    # Format sumbu X supaya nampilin angka detik, bukan tanggal
+    fig.update_xaxes(tickformat="%S", title_text="Waktu (detik)")
+    fig.update_layout(yaxis_title="Resource", height=300)
     
     st.plotly_chart(fig, use_container_width=True)
 
