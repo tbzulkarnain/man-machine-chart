@@ -5,59 +5,72 @@ import plotly.express as px
 st.set_page_config(page_title="Man-Machine Chart Builder", layout="wide")
 
 st.title("⚙️ Man-Machine Chart Builder")
-st.caption("Aplikasi simpel untuk analisis alur kerja Operator & Mesin")
+st.caption("Aplikasi simpel Industrial Engineering untuk analisis alur kerja Operator & Mesin")
 
-# Inisialisasi data di session_state
-if "raw_processes" not in st.session_state:
-    # Contoh data awal sederhana
-    st.session_state.raw_processes = [
-        {"Process": "Loading Material", "Duration": 10, "Actor": "Both"},
-        {"Process": "Auto Cutting", "Duration": 40, "Actor": "Machine"},
-        {"Process": "Prepare Next Lot", "Duration": 20, "Actor": "Man"},
-        {"Process": "Unloading Material", "Duration": 10, "Actor": "Both"},
-    ]
+st.markdown("""
+**Petunjuk:** 
+1. Isi tabel di bawah ini secara langsung seperti di Excel.
+2. Pilih pelaku: **Man**, **Machine**, atau **Both** (keduanya).
+3. Kamu bisa menambah baris baru di bagian bawah tabel jika 10 baris kurang.
+""")
 
-# --- SIDEBAR: FORM INPUT SIMPEL ---
-st.sidebar.header("➕ Tambah Proses Baru")
+# --- PREPARE DEFAULT DATA (10 BARIS) ---
+default_data = [
+    {"Process": "Loading Material", "Duration": 10, "Actor": "Both"},
+    {"Process": "Auto Cutting", "Duration": 40, "Actor": "Machine"},
+    {"Process": "Prepare Next Lot", "Duration": 20, "Actor": "Man"},
+    {"Process": "Unloading Material", "Duration": 10, "Actor": "Both"},
+    {"Process": "", "Duration": 0, "Actor": "Man"},
+    {"Process": "", "Duration": 0, "Actor": "Man"},
+    {"Process": "", "Duration": 0, "Actor": "Man"},
+    {"Process": "", "Duration": 0, "Actor": "Man"},
+    {"Process": "", "Duration": 0, "Actor": "Man"},
+    {"Process": "", "Duration": 0, "Actor": "Man"},
+]
 
-with st.sidebar.form("add_process_form"):
-    process_name = st.text_input("1. Nama Proses", placeholder="Contoh: Loading Material")
-    duration = st.number_input("2. Waktu (detik)", min_value=1, value=10)
-    actor = st.selectbox("3. Pelaku", ["Man", "Machine", "Both"])
-    
-    submitted = st.form_submit_button("Tambah Proses")
-    if submitted:
-        if process_name.strip() == "":
-            st.sidebar.error("Nama proses tidak boleh kosong!")
-        else:
-            st.session_state.raw_processes.append({
-                "Process": process_name,
-                "Duration": duration,
-                "Actor": actor
-            })
-            st.rerun()
+df_default = pd.DataFrame(default_data)
 
-if st.sidebar.button("🗑️ Reset Semua Data"):
-    st.session_state.raw_processes = []
-    st.rerun()
+# --- TABEL INTERAKTIF (BISA DI-EDIT LANGSUNG) ---
+edited_df = st.data_editor(
+    df_default,
+    num_rows="dynamic", # Memungkinkan user menambah/menghapus baris sesuka hati
+    column_config={
+        "Process": st.column_config.TextColumn(
+            "Nama Proses",
+            help="Isi nama langkah/proses kerja",
+            width="large"
+        ),
+        "Duration": st.column_config.NumberColumn(
+            "Waktu (detik)",
+            help="Durasi proses dalam detik",
+            min_value=0,
+            default=0,
+            width="medium"
+        ),
+        "Actor": st.column_config.SelectboxColumn(
+            "Pelaku",
+            help="Pilih siapa yang melakukan proses",
+            options=["Man", "Machine", "Both"],
+            default="Man",
+            width="medium"
+        )
+    },
+    hide_index=True,
+    use_container_width=True
+)
 
-# --- TAMPILKAN TABEL INPUT USER ---
-st.subheader("📋 Daftar Proses Kerja")
+# --- FILTER & HITUNG LOGIKA IE ---
+# Hanya ambil baris yang nama prosesnya diisi dan durasinya > 0
+valid_rows = edited_df[
+    (edited_df["Process"].str.strip() != "") & 
+    (edited_df["Duration"] > 0)
+].to_dict("records")
 
-if st.session_state.raw_processes:
-    input_df = pd.DataFrame(st.session_state.raw_processes)
-    
-    # Tampilkan tabel input
-    st.dataframe(input_df, use_container_width=True)
-    
-    # --- LOGIKA OTOMATIS GENERATE TIMELINE ---
+if valid_rows:
     timeline_data = []
-    current_time_man = 0
-    current_time_machine = 0
-    
-    # Hitung waktu secara sekuensial berdasarkan urutan input
     current_time = 0
-    for item in st.session_state.raw_processes:
+    
+    for item in valid_rows:
         proc = item["Process"]
         dur = item["Duration"]
         act = item["Actor"]
@@ -70,11 +83,9 @@ if st.session_state.raw_processes:
             timeline_data.append({"Actor": "Machine", "Process": proc, "Start": start, "Finish": finish, "Duration": dur, "Type": "Working"})
         elif act == "Man":
             timeline_data.append({"Actor": "Man", "Process": proc, "Start": start, "Finish": finish, "Duration": dur, "Type": "Working"})
-            # Mesin idle saat Man bekerja sendiri
             timeline_data.append({"Actor": "Machine", "Process": f"Idle ({proc})", "Start": start, "Finish": finish, "Duration": dur, "Type": "Idle"})
         elif act == "Machine":
             timeline_data.append({"Actor": "Machine", "Process": proc, "Start": start, "Finish": finish, "Duration": dur, "Type": "Working"})
-            # Man idle saat Machine bekerja sendiri
             timeline_data.append({"Actor": "Man", "Process": f"Idle ({proc})", "Start": start, "Finish": finish, "Duration": dur, "Type": "Idle"})
             
         current_time = finish
@@ -118,4 +129,4 @@ if st.session_state.raw_processes:
     st.plotly_chart(fig, use_container_width=True)
 
 else:
-    st.info("Belum ada data proses. Silakan isi form di sidebar kiri untuk menambahkan proses.")
+    st.info("Ketik nama proses dan durasi di tabel atas untuk melihat chart.")
