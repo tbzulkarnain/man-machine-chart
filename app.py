@@ -3,19 +3,19 @@ import pandas as pd
 import math
 import io
 
-st.set_page_config(page_title="Dynamic Multi-Machine Process Sheet Analyzer", layout="wide")
+st.set_page_config(page_title="Industrial Engineering - Process Sheet & Summary", layout="wide")
 
-st.title("⚙️ Dynamic Multi-Machine Process Sheet Analyzer")
-st.caption("Aplikasi Industrial Engineering untuk Kalkulasi Jumlah Mesin Otomatis & Export Excel Dinamis")
+st.title("⚙️ Multi-Machine Process Sheet & Summary Analyzer")
+st.caption("Aplikasi Industrial Engineering untuk Analisis Waktu Kerja, Idle Time, Utilisasi, & Export Excel")
 
 st.markdown("""
 **Petunjuk Input:**
-1. Isi daftar elemen proses kerja untuk **1 produk / 1 mesin**.
-2. Masukkan estimasi waktu jalan/pindah (*Travel Time*) antar mesin jika ada.
-3. Aplikasi akan **menghitung jumlah mesin ideal ($N$) secara otomatis**, lalu membuatkan tabel Process Sheet & file Excel sesuai jumlah mesin tersebut!
+1. Isi elemen proses kerja untuk **1 produk / 1 mesin**.
+2. Masukkan waktu pindah (*Travel Time*) antar mesin jika ada.
+3. Aplikasi akan menghitung **Jumlah Mesin Ideal ($N$)** dan menghasilkan **Ringkasan Metrik (Summary)** serta **Process Sheet Multi-Mesin**.
 """)
 
-# --- INPUT TRAVEL TIME ---
+# --- INPUT PARAMETER ---
 st.sidebar.header("⚙️ Parameter Lapangan")
 travel_time = st.sidebar.number_input(
     "Waktu Pindah Antar Mesin / Travel Time (detik)", 
@@ -25,7 +25,7 @@ travel_time = st.sidebar.number_input(
     help="Estimasi waktu operator berjalan dari 1 mesin ke mesin berikutnya"
 )
 
-# --- DEFAULT DATA (ELEMEN PROSES 1 MESIN) ---
+# --- DEFAULT DATA ---
 default_data = [
     {"Process": "Loading / Placement Mold 1#", "Duration": 29.86, "Actor": "Both"},
     {"Process": "Close Mold & Start Machine", "Duration": 12.19, "Actor": "Machine"},
@@ -60,27 +60,18 @@ if valid_rows:
     # --- 1. KALKULASI MATHEMATICAL MANNING RATIO (N) ---
     total_l = sum([r["Duration"] for r in valid_rows if r["Actor"] == "Both"])
     total_m = sum([r["Duration"] for r in valid_rows if r["Actor"] == "Machine"])
-    total_man = sum([r["Duration"] for r in valid_rows if r["Actor"] == "Man"])
+    total_man_only = sum([r["Duration"] for r in valid_rows if r["Actor"] == "Man"])
 
     # Rumus Manning Ratio: N = (l + m) / (l + w)
     denom = total_l + travel_time
     if denom > 0:
         n_raw = (total_l + total_m) / denom
-        num_machines = max(1, math.floor(n_raw)) # Jumlah mesin bulat ideal (pembulatan ke bawah agar operator zero idle)
+        num_machines = max(1, math.floor(n_raw))
     else:
         n_raw = 1.0
         num_machines = 1
 
-    st.markdown("---")
-    
-    # --- 2. SUMMARY METRICS ---
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Waktu Servis (l + w)", f"{denom:.2f} s")
-    c2.metric("Waktu Running Mesin (m)", f"{total_m:.2f} s")
-    c3.metric("Rasio Teoritis (N)", f"{n_raw:.2f} MC")
-    c4.metric("🎯 Jumlah Mesin Ideal", f"{num_machines} Mesin", delta="Otomatis terhitung", delta_color="normal")
-
-    # --- 3. LOGIKA GENERATOR PROCESS SHEET DENGAN N MESIN ---
+    # --- 2. LOGIKA GENERATOR PROCESS SHEET & SUMMARY TIME ---
     excel_rows = []
     current_time = 0.0
 
@@ -98,7 +89,6 @@ if valid_rows:
                 "Operator Time (s)": round(dur, 2)
             }
             
-            # Dinamis membentuk kolom untuk MC 1 sampai MC N
             for k in range(1, num_machines + 1):
                 if k == m_idx:
                     if act in ["Both", "Machine"]:
@@ -112,7 +102,7 @@ if valid_rows:
                 
             excel_rows.append(row_dict)
             
-        # Tambahkan travel time antar mesin
+        # Travel time antar mesin
         if m_idx < num_machines and travel_time > 0:
             current_time += travel_time
             row_dict = {
@@ -127,24 +117,73 @@ if valid_rows:
 
     sheet_df = pd.DataFrame(excel_rows)
 
+    # --- 3. KALKULASI METRIK SUMMARY (INDUSTRIAL ENGINEERING) ---
+    total_cycle_time = current_time
+    
+    # Total Man Time = Total Cycle Time Keseluruhan
+    total_man_time = total_cycle_time
+    # Total Machine Time = Total Cycle Time x Jumlah Mesin Terpasang
+    total_mc_time = total_cycle_time * num_machines
+    
+    # Man Time (Waktu Kerja Aktif Man) = (Both + Man_only) * N + Travel Time
+    man_time = ((total_l + total_man_only) * num_machines) + (travel_time * (num_machines - 1))
+    man_idle_time = max(0.0, total_man_time - man_time)
+    
+    # Machine Time (Waktu Kerja Aktif Seluruh Mesin) = (Both + Machine) * N
+    mc_time = (total_l + total_m) * num_machines
+    mc_idle_time = max(0.0, total_mc_time - mc_time)
+    
+    # Utilitas
+    utilitas_man = (man_time / total_man_time * 100) if total_man_time > 0 else 0.0
+    utilitas_mc = (mc_time / total_mc_time * 100) if total_mc_time > 0 else 0.0
+
+    # TABEL SUMMARY METRICS
+    summary_data = [
+        {"Metric Parameter": "Jumlah Mesin Ideal (N)", "Value": f"{num_machines} Mesin", "Unit": "MC"},
+        {"Metric Parameter": "Man Time (Waktu Kerja Operator)", "Value": round(man_time, 2), "Unit": "detik"},
+        {"Metric Parameter": "Machine Time (Waktu Kerja Mesin)", "Value": round(mc_time, 2), "Unit": "detik"},
+        {"Metric Parameter": "Man Idle Time (Waktu Menganggur Operator)", "Value": round(man_idle_time, 2), "Unit": "detik"},
+        {"Metric Parameter": "Machine Idle Time (Waktu Menganggur Mesin)", "Value": round(mc_idle_time, 2), "Unit": "detik"},
+        {"Metric Parameter": "Total Man Time (Ketersediaan Operator)", "Value": round(total_man_time, 2), "Unit": "detik"},
+        {"Metric Parameter": "Total Machine Time (Ketersediaan Seluruh Mesin)", "Value": round(total_mc_time, 2), "Unit": "detik"},
+        {"Metric Parameter": "Utilitas Man", "Value": f"{utilitas_man:.2f}%", "Unit": "%"},
+        {"Metric Parameter": "Utilitas Machine", "Value": f"{utilitas_mc:.2f}%", "Unit": "%"},
+    ]
+    
+    summary_df = pd.DataFrame(summary_data)
+
     st.markdown("---")
 
-    # --- 4. TAMPILAN TABEL DINAMIS & EXPORT EXCEL ---
-    st.subheader(f"📋 Multi-Machine Process Sheet ({num_machines} Mesin Hasil Hitungan)")
+    # --- 4. TAMPILAN DASHBOARD METRICS SUMMARY ---
+    st.subheader("📊 Ringkasan Metrik (Summary Report)")
+    
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Total Man Time", f"{total_man_time:.2f} s")
+    c2.metric("Man Idle Time", f"{man_idle_time:.2f} s", delta=f"Utilitas {utilitas_man:.1f}%")
+    c3.metric("Machine Idle Time", f"{mc_idle_time:.2f} s", delta=f"Utilitas {utilitas_mc:.1f}%")
+    c4.metric("Mesin Ideal (N)", f"{num_machines} MC")
+
+    st.table(summary_df)
+
+    st.markdown("---")
+
+    # --- 5. TAMPILAN PROCESS SHEET & EXPORT EXCEL ---
+    st.subheader(f"📋 Process Sheet ({num_machines} Mesin)")
     st.dataframe(sheet_df, use_container_width=True)
 
-    # Export File Excel
+    # Export Ke Excel dengan 2 Sheet (Summary & Process Sheet)
     buffer = io.BytesIO()
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-        sheet_df.to_excel(writer, index=False, sheet_name=f"Process Sheet {num_machines} MC")
+        summary_df.to_excel(writer, index=False, sheet_name="Summary & Metrics")
+        sheet_df.to_excel(writer, index=False, sheet_name=f"Process Sheet ({num_machines} MC)")
     excel_data = buffer.getvalue()
 
     st.download_button(
-        label=f"📥 Download Process Sheet ({num_machines} Mesin) .xlsx",
+        label=f"📥 Download Laporan Lengkap (.xlsx)",
         data=excel_data,
-        file_name=f"Man_Machine_Sheet_{num_machines}MC.xlsx",
+        file_name=f"Man_Machine_Analysis_{num_machines}MC.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
 
 else:
-    st.info("Ketik nama proses dan durasi di tabel atas untuk menghitung otomatis jumlah mesin & Process Sheet.")
+    st.info("Ketik nama proses dan durasi di tabel atas untuk menghitung Summary & Process Sheet.")
