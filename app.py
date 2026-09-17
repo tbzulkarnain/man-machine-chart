@@ -5,90 +5,117 @@ import plotly.express as px
 st.set_page_config(page_title="Man-Machine Chart Builder", layout="wide")
 
 st.title("⚙️ Man-Machine Chart Builder")
-st.caption("Aplikasi Industrial Engineering untuk analisis utilisasi Operator & Mesin")
+st.caption("Aplikasi simpel untuk analisis alur kerja Operator & Mesin")
 
-# --- SIDEBAR: INPUT DATA ---
-st.sidebar.header("Tambah Aktivitas")
-
-if "tasks" not in st.session_state:
-    st.session_state.tasks = [
-        {"Actor": "Operator", "Task": "Load Material", "Start": 0, "Duration": 15, "Type": "Working"},
-        {"Actor": "Machine", "Task": "Idle (Waiting Load)", "Start": 0, "Duration": 15, "Type": "Idle"},
-        {"Actor": "Machine", "Task": "Auto Cutting", "Start": 15, "Duration": 60, "Type": "Working"},
-        {"Actor": "Operator", "Task": "Prepare Next Lot", "Start": 15, "Duration": 30, "Type": "Working"},
-        {"Actor": "Operator", "Task": "Idle (Waiting Machine)", "Start": 45, "Duration": 30, "Type": "Idle"},
-        {"Actor": "Operator", "Task": "Unload Material", "Start": 75, "Duration": 15, "Type": "Working"},
-        {"Actor": "Machine", "Task": "Idle (Waiting Unload)", "Start": 75, "Duration": 15, "Type": "Idle"},
+# Inisialisasi data di session_state
+if "raw_processes" not in st.session_state:
+    # Contoh data awal sederhana
+    st.session_state.raw_processes = [
+        {"Process": "Loading Material", "Duration": 10, "Actor": "Both"},
+        {"Process": "Auto Cutting", "Duration": 40, "Actor": "Machine"},
+        {"Process": "Prepare Next Lot", "Duration": 20, "Actor": "Man"},
+        {"Process": "Unloading Material", "Duration": 10, "Actor": "Both"},
     ]
 
-with st.sidebar.form("add_task_form"):
-    actor = st.selectbox("Aktor", ["Operator", "Machine"])
-    task_name = st.text_input("Nama Aktivitas", "Proses Cepat")
-    start_time = st.number_input("Waktu Mulai (detik)", min_value=0, value=0)
-    duration = st.number_input("Durasi (detik)", min_value=1, value=10)
-    task_type = st.selectbox("Tipe", ["Working", "Idle"])
-    
-    submitted = st.form_submit_button("Tambah ke Chart")
-    if submitted:
-        st.session_state.tasks.append({
-            "Actor": actor,
-            "Task": task_name,
-            "Start": start_time,
-            "Duration": duration,
-            "Type": task_type
-        })
-        st.rerun()
+# --- SIDEBAR: FORM INPUT SIMPEL ---
+st.sidebar.header("➕ Tambah Proses Baru")
 
-if st.sidebar.button("Reset Data"):
-    st.session_state.tasks = []
+with st.sidebar.form("add_process_form"):
+    process_name = st.text_input("1. Nama Proses", placeholder="Contoh: Loading Material")
+    duration = st.number_input("2. Waktu (detik)", min_value=1, value=10)
+    actor = st.selectbox("3. Pelaku", ["Man", "Machine", "Both"])
+    
+    submitted = st.form_submit_button("Tambah Proses")
+    if submitted:
+        if process_name.strip() == "":
+            st.sidebar.error("Nama proses tidak boleh kosong!")
+        else:
+            st.session_state.raw_processes.append({
+                "Process": process_name,
+                "Duration": duration,
+                "Actor": actor
+            })
+            st.rerun()
+
+if st.sidebar.button("🗑️ Reset Semua Data"):
+    st.session_state.raw_processes = []
     st.rerun()
 
-# --- KALKULASI LOGIKA IE ---
-df = pd.DataFrame(st.session_state.tasks)
+# --- TAMPILKAN TABEL INPUT USER ---
+st.subheader("📋 Daftar Proses Kerja")
 
-if not df.empty:
-    df["Finish"] = df["Start"] + df["Duration"]
-    cycle_time = df["Finish"].max()
+if st.session_state.raw_processes:
+    input_df = pd.DataFrame(st.session_state.raw_processes)
+    
+    # Tampilkan tabel input
+    st.dataframe(input_df, use_container_width=True)
+    
+    # --- LOGIKA OTOMATIS GENERATE TIMELINE ---
+    timeline_data = []
+    current_time_man = 0
+    current_time_machine = 0
+    
+    # Hitung waktu secara sekuensial berdasarkan urutan input
+    current_time = 0
+    for item in st.session_state.raw_processes:
+        proc = item["Process"]
+        dur = item["Duration"]
+        act = item["Actor"]
+        
+        start = current_time
+        finish = start + dur
+        
+        if act == "Both":
+            timeline_data.append({"Actor": "Man", "Process": proc, "Start": start, "Finish": finish, "Duration": dur, "Type": "Working"})
+            timeline_data.append({"Actor": "Machine", "Process": proc, "Start": start, "Finish": finish, "Duration": dur, "Type": "Working"})
+        elif act == "Man":
+            timeline_data.append({"Actor": "Man", "Process": proc, "Start": start, "Finish": finish, "Duration": dur, "Type": "Working"})
+            # Mesin idle saat Man bekerja sendiri
+            timeline_data.append({"Actor": "Machine", "Process": f"Idle ({proc})", "Start": start, "Finish": finish, "Duration": dur, "Type": "Idle"})
+        elif act == "Machine":
+            timeline_data.append({"Actor": "Machine", "Process": proc, "Start": start, "Finish": finish, "Duration": dur, "Type": "Working"})
+            # Man idle saat Machine bekerja sendiri
+            timeline_data.append({"Actor": "Man", "Process": f"Idle ({proc})", "Start": start, "Finish": finish, "Duration": dur, "Type": "Idle"})
+            
+        current_time = finish
 
-    # Hitung Working Time
-    op_work = df[(df["Actor"] == "Operator") & (df["Type"] == "Working")]["Duration"].sum()
-    mc_work = df[(df["Actor"] == "Machine") & (df["Type"] == "Working")]["Duration"].sum()
+    chart_df = pd.DataFrame(timeline_data)
+    total_cycle_time = current_time
 
-    op_utilization = (op_work / cycle_time * 100) if cycle_time > 0 else 0
-    mc_utilization = (mc_work / cycle_time * 100) if cycle_time > 0 else 0
+    # --- KALKULASI METRIK ---
+    man_work = chart_df[(chart_df["Actor"] == "Man") & (chart_df["Type"] == "Working")]["Duration"].sum()
+    mc_work = chart_df[(chart_df["Actor"] == "Machine") & (chart_df["Type"] == "Working")]["Duration"].sum()
 
-    # --- DASHBOARD METRICS ---
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Total Cycle Time", f"{cycle_time} detik")
-    col2.metric("Utilisasi Operator", f"{op_utilization:.1f}%")
-    col3.metric("Utilisasi Mesin", f"{mc_utilization:.1f}%")
+    man_util = (man_work / total_cycle_time * 100) if total_cycle_time > 0 else 0
+    mc_util = (mc_work / total_cycle_time * 100) if total_cycle_time > 0 else 0
 
     st.markdown("---")
-
-    # --- VISUALISASI CHART (PLOTLY GANTT) ---
-    st.subheader("📊 Visualisasi Man-Machine Chart")
     
-    # Custom warna: Working (Biru/Hijau), Idle (Merah/Abu)
-    color_map = {"Working": "#2b5c8f", "Idle": "#d9534f"}
+    # --- DASHBOARD METRICS ---
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Total Cycle Time", f"{total_cycle_time} detik")
+    c2.metric("Utilisasi Man", f"{man_util:.1f}%")
+    c3.metric("Utilisasi Machine", f"{mc_util:.1f}%")
+
+    # --- VISUALISASI CHART ---
+    st.subheader("📊 Man-Machine Chart (Otomatis)")
+    
+    color_map = {"Working": "#1f77b4", "Idle": "#d62728"}
     
     fig = px.timeline(
-        df,
+        chart_df,
         x_start="Start",
         x_end="Finish",
         y="Actor",
         color="Type",
-        hover_data=["Task", "Duration"],
+        hover_data=["Process", "Duration"],
         color_discrete_map=color_map,
-        title="Timeline Aktivitas Operator vs Mesin"
     )
     
-    fig.update_yaxes(autorange="reversed") # Operator di atas, Mesin di bawah
-    fig.update_layout(xaxis_title="Waktu (detik)", yaxis_title="Resource", height=350)
+    fig.update_yaxes(autorange="reversed")
+    fig.update_layout(xaxis_title="Waktu (detik)", yaxis_title="Resource", height=300)
     
     st.plotly_chart(fig, use_container_width=True)
 
-    # --- TABEL DATA ---
-    with st.expander("Lihat Rincian Data Tabel"):
-        st.dataframe(df[["Actor", "Task", "Start", "Finish", "Duration", "Type"]], use_container_width=True)
 else:
-    st.info("Belum ada data. Silakan isi form di sidebar untuk memulai.")
+    st.info("Belum ada data proses. Silakan isi form di sidebar kiri untuk menambahkan proses.")
