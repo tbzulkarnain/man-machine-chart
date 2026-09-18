@@ -6,20 +6,26 @@ import openpyxl
 from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
-st.set_page_config(page_title="AI-Simulated Man-Machine Analyzer", layout="wide")
+st.set_page_config(page_title="Universal Multi-Machine IE Analyzer", layout="wide")
 
-st.title("⚙️ AI-Simulated Multi-Machine Process Analyzer")
-st.caption("Engine Simulasi Event-Based: Menggambarkan Kondisi Nyata Operator & Mesin Tanpa Overlap")
+st.title("⚙️ Universal Multi-Machine Process Analyzer")
+st.caption("Aplikasi IE Universal: Simulasi Linimasa Real-Time & Rekomendasi Mesin Dinamis")
 
-# --- PARAMETER LAPANGAN ---
+# =============================================================================
+# 1. PARAMETER GLOBAL (KONDISI LAPANGAN)
+# =============================================================================
 st.sidebar.header("⚙️ Parameter Lapangan")
 travel_time = st.sidebar.number_input(
     "Waktu Pindah Antar Mesin / Travel Time (detik)", 
     min_value=0.0, 
     value=0.0, 
-    step=0.5
+    step=0.5,
+    help="Waktu yang dibutuhkan operator untuk berpindah dari satu mesin ke mesin berikutnya."
 )
 
+# =============================================================================
+# 2. TABEL ELEMEN KERJA STANDARD (ELEMENT SEQUENCE MASTER)
+# =============================================================================
 default_data = [
     {"Seq": 1, "Process": "Placing component to pallet", "Duration": 15.02, "Actor": "Man"},
     {"Seq": 2, "Process": "Loading - Unloading", "Duration": 4.48, "Actor": "Both"},
@@ -29,7 +35,9 @@ default_data = [
 
 df_default = pd.DataFrame(default_data)
 
-st.subheader("📝 Input Elemen Proses Standard (1 Siklus)")
+st.subheader("📝 Input Elemen Proses Standard (1 Siklus Master)")
+st.write("Masukkan daftar elemen kerja untuk **1 mesin**. Kategori Aktor:")
+st.caption("• **Man**: Pekerjaan persiapan/internal operator (mesin tidak terikat)\n• **Both**: Interaksi bersama operator & mesin (loading/unloading/setup)\n• **Machine**: Otomatisasi mesin berjalan sendiri (St Process/Machining time)")
 
 edited_df = st.data_editor(
     df_default,
@@ -38,39 +46,48 @@ edited_df = st.data_editor(
         "Seq": st.column_config.NumberColumn("No / Seq", width="small", default=1),
         "Process": st.column_config.TextColumn("Nama Proses / Activity", width="large"),
         "Duration": st.column_config.NumberColumn("Waktu (s)", min_value=0.0, format="%.2f", width="small"),
-        "Actor": st.column_config.SelectboxColumn("Resource", options=["Man", "Machine", "Both"], width="small"),
+        "Actor": st.column_config.SelectboxColumn("Aktor / Resource", options=["Man", "Both", "Machine"], width="small"),
     },
     hide_index=True,
     use_container_width=True
 )
 
+# Filter & validasi data input
 valid_df = edited_df[
-    (edited_df["Process"].str.strip() != "") & 
+    (edited_df["Process"].astype(str).str.strip() != "") & 
     (edited_df["Duration"] > 0)
 ].sort_values(by="Seq")
 
 valid_rows = valid_df.to_dict("records")
 
 if valid_rows:
+    # Perhitungan parameter dasar IE
     man_work_per_mc = sum(r["Duration"] for r in valid_rows if r["Actor"] in ["Man", "Both"])
     mc_cycle_time = sum(r["Duration"] for r in valid_rows if r["Actor"] in ["Both", "Machine"])
 
     if man_work_per_mc > 0 and mc_cycle_time > 0:
+        # Rumus IE: N = MC / (Man + Travel)
         n_ideal_raw = mc_cycle_time / (man_work_per_mc + travel_time)
         n_recommended = max(1, math.floor(n_ideal_raw))
 
         st.markdown("---")
         col_rec1, col_rec2 = st.columns([1, 2])
         with col_rec1:
-            st.metric("Rekomendasi Mesin Ideal (N)", f"{n_recommended} Mesin")
+            st.metric(
+                label="Rekomendasi Mesin Ideal (N)", 
+                value=f"{n_recommended} Mesin",
+                help=f"Hasil perhitungan matematis presisi: {n_ideal_raw:.2f} mesin"
+            )
         
         with col_rec2:
             num_machines = st.number_input(
-                "Jumlah Mesin yang Dioperasikan:",
+                "Jumlah Mesin yang Dioperasikan (Bisa Disesuaikan):",
                 min_value=1, max_value=10, value=int(n_recommended), step=1
             )
 
-        # SUMMARY METRICS
+        # ---------------------------------------------------------------------
+        # SUMMARY ANALYSIS METRICS
+        # ---------------------------------------------------------------------
         total_man_work = man_work_per_mc * num_machines
         system_cycle_time = max(mc_cycle_time, (man_work_per_mc + travel_time) * num_machines)
         man_idle = max(0.0, system_cycle_time - total_man_work - (travel_time * num_machines))
@@ -92,96 +109,100 @@ if valid_rows:
         st.subheader(f"📊 Summary Analysis ({num_machines} Mesin)")
         st.table(summary_df)
 
-        # =========================================================================
-        # DISCRETE-EVENT SIMULATION ENGINE (REAL-TIME STATUS TRACKER)
-        # =========================================================================
-        events = []
+        # =====================================================================
+        # 3. ENGINE SIMULASI EVENT-BASED (LOGIKA CORE MMC UNIVERSAL)
+        # =====================================================================
+        # Ambil elemen 'Machine' (St Process/Machining) jika ada
+        machine_elem = next((r for r in valid_rows if r["Actor"] == "Machine"), None)
+        st_proc_dur = machine_elem["Duration"] if machine_elem else 0.0
+        st_proc_name = machine_elem["Process"] if machine_elem else "Machine Process"
+
+        # Elemen yang membutuhkan interaksi operator
+        op_sequence = [r for r in valid_rows if r["Actor"] in ["Man", "Both"]]
+
+        # Tracking status waktu
         op_time = 0.0
         mc_finish_time = {m: 0.0 for m in range(1, num_machines + 1)}
+        events = []
 
-        # Simulasi dijalankan 2 siklus
+        # Simulasi berjalan selama 2 siklus penuh untuk mendapatkan pola steady-state
         for cycle in range(2):
             for m_idx in range(1, num_machines + 1):
-                for elem in valid_rows:
+                for elem in op_sequence:
                     proc = elem["Process"]
                     dur = elem["Duration"]
                     act = elem["Actor"]
 
                     if act == "Man":
-                        # Operator Bekerja Sendiri (misal: Placing component to pallet)
+                        # Elemen persiapan operator (misal: Placing component)
                         start_t = op_time
                         end_t = start_t + dur
+                        op_time = end_t
                         events.append({
                             "start": start_t, "end": end_t, "dur": dur,
-                            "op_act": proc, "mc_target": m_idx, "mc_act": "idle"
+                            "op_act": proc, "target_mc": m_idx, "mc_act": "idle"
                         })
-                        op_time = end_t
 
                     elif act == "Both":
-                        # Operator & Mesin Bekerja Bersama (misal: Loading - Unloading / Take Result)
-                        # Jika mesin masih berjalan dari siklus sebelumnya, operator harus menunggu
+                        # Elemen interaksi (misal: Loading - Unloading)
+                        # CEK: Apakah mesin target masih berproses dari siklus sebelumnya?
                         if op_time < mc_finish_time[m_idx]:
-                            wait_dur = mc_finish_time[m_idx] - op_time
+                            wait_dur = round(mc_finish_time[m_idx] - op_time, 2)
+                            start_t = op_time
+                            end_t = mc_finish_time[m_idx]
+                            op_time = end_t
                             events.append({
-                                "start": op_time, "end": mc_finish_time[m_idx], "dur": wait_dur,
-                                "op_act": "waiting", "mc_target": m_idx, "mc_act": "running"
+                                "start": start_t, "end": end_t, "dur": wait_dur,
+                                "op_act": "waiting", "target_mc": m_idx, "mc_act": "running"
                             })
-                            op_time = mc_finish_time[m_idx]
 
+                        # Eksekusi pekerjaan bersama
                         start_t = op_time
                         end_t = start_t + dur
-                        events.append({
-                            "start": start_t, "end": end_t, "dur": dur,
-                            "op_act": proc, "mc_target": m_idx, "mc_act": proc
-                        })
                         op_time = end_t
-                        mc_finish_time[m_idx] = end_t
-
-                    elif act == "Machine":
-                        # Mesin Bekerja Mandiri (misal: St Process)
-                        start_t = op_time
-                        end_t = start_t + dur
-                        mc_finish_time[m_idx] = end_t
-                        # Catat aktivitas mesin secara otomatis
                         events.append({
                             "start": start_t, "end": end_t, "dur": dur,
-                            "op_act": "free", "mc_target": m_idx, "mc_act": proc
+                            "op_act": proc, "target_mc": m_idx, "mc_act": proc
                         })
 
-                # Jika ada travel time antar mesin
+                        # TRIGGER OTOMATIS: Jika ini elemen loading/pemicu, mesin langsung RUNNING
+                        if st_proc_dur > 0 and ("load" in proc.lower() or elem == op_sequence[-1]):
+                            mc_finish_time[m_idx] = end_t + st_proc_dur
+
+                # Pindah antar mesin (Travel Time)
                 if travel_time > 0:
                     start_t = op_time
                     end_t = start_t + travel_time
+                    op_time = end_t
                     events.append({
                         "start": start_t, "end": end_t, "dur": travel_time,
-                        "op_act": "traveling", "mc_target": None, "mc_act": "idle"
+                        "op_act": "traveling", "target_mc": None, "mc_act": "idle"
                     })
-                    op_time = end_t
 
-        # GENERATE TABLE BASED ON INTERVAL TIMELINE
+        # =====================================================================
+        # 4. GENERASI TABEL PROCESS SHEET PER INTERVAL
+        # =====================================================================
         chart_rows = []
         for ev in events:
-            # Lewati event khusus internal mesin jika waktunya sudah ter-cover oleh operator
-            if ev["op_act"] == "free":
-                continue
-
-            t_stamp = round(ev["end"], 2)
+            start_t = ev["start"]
+            end_t = ev["end"]
             dur = round(ev["dur"], 2)
+            t_stamp = round(end_t, 2)
 
             row = {
                 "Time (s)": t_stamp,
                 "Operator": ev["op_act"],
-                "Op Time": dur if ev["op_act"] not in ["waiting", "idle"] else 0.0
+                "Op Time": dur if ev["op_act"] not in ["waiting", "idle", "traveling"] else 0.0
             }
 
             for m in range(1, num_machines + 1):
-                if ev["mc_target"] == m:
+                if ev["target_mc"] == m:
                     row[f"Machine {m}"] = ev["mc_act"]
                     row[f"MC {m} Time"] = dur
                 else:
-                    # Cek status mesin lain pada interval waktu [ev['start'], ev['end']]
-                    if ev["start"] < mc_finish_time[m]:
-                        row[f"Machine {m}"] = "St Process"
+                    # Cek kondisi riil mesin lain pada interval [start_t, end_t]
+                    if start_t < mc_finish_time[m]:
+                        row[f"Machine {m}"] = st_proc_name
                     else:
                         row[f"Machine {m}"] = "waiting"
                     row[f"MC {m} Time"] = dur
@@ -191,10 +212,12 @@ if valid_rows:
         process_sheet_df = pd.DataFrame(chart_rows)
 
         st.markdown("---")
-        st.subheader(f"📋 AI-Simulated Man-Machine Process Sheet ({num_machines} Mesin)")
+        st.subheader(f"📋 Generated Man-Machine Process Sheet ({num_machines} Mesin)")
         st.dataframe(process_sheet_df, use_container_width=True)
 
-        # EXPORT EXCEL
+        # =====================================================================
+        # 5. EXPORT TO EXCEL FUNCTION (.XLSX)
+        # =====================================================================
         def build_excel_file():
             wb = openpyxl.Workbook()
             ws_sheet = wb.active
@@ -251,6 +274,6 @@ if valid_rows:
         st.download_button(
             label="📥 Download Laporan Excel (.xlsx)",
             data=build_excel_file(),
-            file_name=f"AI_Simulated_MM_Analysis_{num_machines}MC.xlsx",
+            file_name=f"Universal_MM_Analysis_{num_machines}MC.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
