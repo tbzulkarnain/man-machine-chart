@@ -6,7 +6,7 @@ import io
 st.set_page_config(page_title="Multi-Machine Process Sheet Analyzer", layout="wide")
 
 st.title("⚙️ Multi-Machine Process Sheet & Summary Analyzer")
-st.caption("Aplikasi Industrial Engineering dengan Visualisasi Man-Machine Chart Interleaving / Parallel Work")
+st.caption("Aplikasi Dynamic Industrial Engineering Man-Machine Chart (Fleksibel & Otomatis)")
 
 # --- INPUT PARAMETER ---
 st.sidebar.header("⚙️ Parameter Lapangan")
@@ -18,7 +18,7 @@ travel_time = st.sidebar.number_input(
     help="Estimasi waktu operator berjalan dari 1 mesin ke mesin berikutnya"
 )
 
-# --- DEFAULT DATA (Sesuai Gambar Kamu) ---
+# --- DEFAULT DATA ---
 default_data = [
     {"Process": "Placing component to pallet", "Duration": 15.02, "Actor": "Man"},
     {"Process": "Loading - Unloading", "Duration": 4.48, "Actor": "Both"},
@@ -28,7 +28,7 @@ default_data = [
 
 df_default = pd.DataFrame(default_data)
 
-# --- TABEL INPUT DATA ---
+# --- TABEL INPUT DATA ELEMEN PROSES ---
 st.subheader("📝 Elemen Proses (1 Siklus pada 1 Mesin)")
 edited_df = st.data_editor(
     df_default,
@@ -48,90 +48,159 @@ valid_rows = edited_df[
 ].to_dict("records")
 
 if valid_rows:
-    # --- 1. IDENTIFIKASI ELEMEN PROSES ---
-    p_place = next((r for r in valid_rows if "PLACE" in r["Process"].upper() or "PALLET" in r["Process"].upper()), None)
-    p_load = next((r for r in valid_rows if "LOAD" in r["Process"].upper()), None)
-    p_stitch = next((r for r in valid_rows if "ST" in r["Process"].upper() or "MACHINE" in r["Actor"].upper()), None)
-    p_take = next((r for r in valid_rows if "TAKE" in r["Process"].upper() or "RESULT" in r["Process"].upper()), None)
-
-    # Fallback jika nama beda
-    place_dur = p_place["Duration"] if p_place else 15.02
-    load_dur = p_load["Duration"] if p_load else 4.48
-    stitch_dur = p_stitch["Duration"] if p_stitch else 51.72
-    take_dur = p_take["Duration"] if p_take else 2.47
-
-    place_name = p_place["Process"] if p_place else "Placing component to pallet"
-    load_name = p_load["Process"] if p_load else "Loading - Unloading"
-    stitch_name = p_stitch["Process"] if p_stitch else "St Process"
-    take_name = p_take["Process"] if p_take else "take result"
-
-    # --- 2. KALKULASI MANNING RATIO & SUMMARY ---
-    mc_cycle = load_dur + stitch_dur  # 56.20 s
-    man_work_per_mc = place_dur + load_dur + take_dur # 21.97 s
+    # --- 1. HITUNG ELEMEN UTAMA DARI TABEL INPUT ---
+    # Man Work (Man only & Both)
+    man_work = sum(r["Duration"] for r in valid_rows if r["Actor"] in ["Man", "Both"])
     
-    # N Mesin Ideal
-    n_raw = mc_cycle / (man_work_per_mc + travel_time)
-    num_machines = max(1, math.floor(n_raw)) # 2 Mesin
+    # Machine Automatic Work (Machine only)
+    machine_auto = sum(r["Duration"] for r in valid_rows if r["Actor"] == "Machine")
+    
+    # Total Machine Cycle Time (Both + Machine)
+    machine_cycle = sum(r["Duration"] for r in valid_rows if r["Actor"] in ["Both", "Machine"])
 
-    # Summary Metrics
-    system_cycle_time = max(mc_cycle, man_work_per_mc * num_machines) # 56.20 s
-    working_time_man = man_work_per_mc * num_machines # 43.94 s
-    idle_time_man = system_cycle_time - working_time_man # 12.26 s
-    util_man = (working_time_man / system_cycle_time) * 100 # 78%
+    if man_work > 0 and machine_cycle > 0:
+        # --- 2. PERHITUNGAN N MESIN IDEAL (MANNING RATIO) ---
+        # Rumus N = (Waktu Mesin Auto + Waktu Kerja Man pada Mesin) / (Waktu Kerja Man + Travel Time)
+        n_ideal_raw = (machine_cycle) / (man_work + travel_time)
+        n_recommended = max(1, math.floor(n_ideal_raw))
 
-    working_time_mc = mc_cycle # 56.20 s
-    idle_time_mc = 0.0
-    util_mc = 100.0
+        st.markdown("---")
+        col_rec1, col_rec2 = st.columns([1, 2])
+        with col_rec1:
+            st.metric("Rekomendasi Mesin (Ideal)", f"{n_recommended} Mesin", help=f"Hasil kalkulasi N raw = {n_ideal_raw:.2f}")
+        
+        with col_rec2:
+            # Pilihan Pengguna Mau Pegang Berapa Mesin
+            num_machines = st.number_input(
+                "Jumlah Mesin yang Ditangani Operator (Bisa Diubah Manual):",
+                min_value=1,
+                max_value=10,
+                value=int(n_recommended),
+                step=1,
+                help="Kamu bisa menentukan berapa banyak mesin yang dioperasikan oleh 1 operator."
+            )
 
-    # --- TABEL SUMMARY ---
-    summary_data = [
-        {"Resource": "Operator", "Working time": round(working_time_man, 2), "Idle time": round(idle_time_man, 2), "Total cycle time": round(system_cycle_time, 2), "Utilization in percent": f"{round(util_man)}%"},
-        {"Resource": "Machine 1", "Working time": round(working_time_mc, 2), "Idle time": round(idle_time_mc, 2), "Total cycle time": round(system_cycle_time, 2), "Utilization in percent": f"{round(util_mc)}%"},
-        {"Resource": "Machine 2", "Working time": round(working_time_mc, 2), "Idle time": round(idle_time_mc, 2), "Total cycle time": round(system_cycle_time, 2), "Utilization in percent": f"{round(util_mc)}%"},
-    ]
-    summary_df = pd.DataFrame(summary_data)
+        # --- 3. KALKULASI SUMMARY DENGAN N MESIN PILIHAN ---
+        # System Cycle Time ditentukan oleh bottlenecks (apakah Man terbatas atau Machine terbatas)
+        system_cycle_time = max(machine_cycle, (man_work + travel_time) * num_machines)
+        
+        # Total waktu kerja Man & Idle Man per siklus sistem
+        total_man_work = man_work * num_machines
+        man_idle = max(0.0, system_cycle_time - total_man_work - (travel_time * num_machines))
+        man_util = (total_man_work / system_cycle_time) * 100
 
-    st.markdown("---")
-    st.subheader("📊 Summary")
-    st.table(summary_df)
+        # Summary Table Data
+        summary_rows = []
+        summary_rows.append({
+            "Resource": "Operator",
+            "Working time (s)": round(total_man_work, 2),
+            "Idle time (s)": round(man_idle, 2),
+            "Total cycle time (s)": round(system_cycle_time, 2),
+            "Utilization (%)": f"{round(man_util, 1)}%"
+        })
 
-    # --- 3. REKONSTRUKSI PROCESS SHEET VISUAL INTERLEAVING (SESUAI EXCEL MANUAL) ---
-    chart_rows = [
-        {"Time (s)": 15.02, "Operator": place_name, "Op Time": 15.02, "Machine 1": "waiting", "MC 1 Time": 15.02, "Machine 2": "waiting", "MC 2 Time": 15.02},
-        {"Time (s)": 19.50, "Operator": load_name, "Op Time": 4.48, "Machine 1": load_name, "MC 1 Time": 4.48, "Machine 2": "waiting", "MC 2 Time": 4.48},
-        {"Time (s)": 34.52, "Operator": place_name, "Op Time": 15.02, "Machine 1": stitch_name, "MC 1 Time": stitch_dur, "Machine 2": "waiting", "MC 2 Time": 15.02},
-        {"Time (s)": 39.00, "Operator": load_name, "Op Time": 4.48, "Machine 1": "", "MC 1 Time": "", "Machine 2": load_name, "MC 2 Time": 4.48},
-        {"Time (s)": 54.02, "Operator": place_name, "Op Time": 15.02, "Machine 1": "", "MC 1 Time": "", "Machine 2": stitch_name, "MC 2 Time": stitch_dur},
-        {"Time (s)": 71.22, "Operator": "idle", "Op Time": 17.20, "Machine 1": "", "MC 1 Time": "", "Machine 2": "", "MC 2 Time": ""},
-        {"Time (s)": 75.70, "Operator": load_name, "Op Time": 4.48, "Machine 1": load_name, "MC 1 Time": 4.48, "Machine 2": "", "MC 2 Time": ""},
-        {"Time (s)": 78.17, "Operator": take_name, "Op Time": 2.47, "Machine 1": stitch_name, "MC 1 Time": stitch_dur, "Machine 2": "idle", "MC 2 Time": 2.47},
-        {"Time (s)": 93.19, "Operator": place_name, "Op Time": 15.02, "Machine 1": "", "MC 1 Time": "", "Machine 2": load_name, "MC 2 Time": 4.48},
-        {"Time (s)": 97.67, "Operator": load_name, "Op Time": 4.48, "Machine 1": "", "MC 1 Time": "", "Machine 2": stitch_name, "MC 2 Time": stitch_dur},
-        {"Time (s)": 100.14, "Operator": take_name, "Op Time": 2.47, "Machine 1": "", "MC 1 Time": "", "Machine 2": "", "MC 2 Time": ""},
-        {"Time (s)": 115.16, "Operator": place_name, "Op Time": 15.02, "Machine 1": "", "MC 1 Time": "", "Machine 2": "", "MC 2 Time": ""},
-        {"Time (s)": 127.42, "Operator": "idle", "Op Time": 12.26, "Machine 1": "", "MC 1 Time": "", "Machine 2": "", "MC 2 Time": ""},
-        {"Time (s)": 131.90, "Operator": load_name, "Op Time": 4.48, "Machine 1": load_name, "MC 1 Time": 4.48, "Machine 2": "", "MC 2 Time": ""},
-    ]
+        for i in range(1, num_machines + 1):
+            mc_work = machine_cycle
+            mc_idle = max(0.0, system_cycle_time - mc_work)
+            mc_util = (mc_work / system_cycle_time) * 100
+            summary_rows.append({
+                "Resource": f"Machine {i}",
+                "Working time (s)": round(mc_work, 2),
+                "Idle time (s)": round(mc_idle, 2),
+                "Total cycle time (s)": round(system_cycle_time, 2),
+                "Utilization (%)": f"{round(mc_util, 1)}%"
+            })
 
-    process_sheet_df = pd.DataFrame(chart_rows)
+        summary_df = pd.DataFrame(summary_rows)
 
-    st.markdown("---")
-    st.subheader("📋 Man-Machine Process Sheet (Interleaved Sequence)")
-    st.dataframe(process_sheet_df, use_container_width=True)
+        st.subheader("📊 Summary Performance")
+        st.dataframe(summary_df, use_container_width=True)
 
-    # Export Excel 2 Sheet
-    buffer = io.BytesIO()
-    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-        summary_df.to_excel(writer, index=False, sheet_name="Summary")
-        process_sheet_df.to_excel(writer, index=False, sheet_name="Process Sheet")
-    excel_data = buffer.getvalue()
+        # --- 4. ALGORITMA SCHEDULING TIMELINE (DINAMIS UNTUK SEGALA INPUT DATA & N MESIN) ---
+        # Kita memetakan event-event utama secara kronologis berdasarkan waktu
+        timeline_events = []
+        
+        # Identifikasi elemen internal man (preparation) vs external man (load/unload/take)
+        man_prep_elements = [r for r in valid_rows if r["Actor"] == "Man"]
+        man_mc_elements = [r for r in valid_rows if r["Actor"] in ["Both", "Machine"]]
 
-    st.download_button(
-        label="📥 Download Laporan Excel (.xlsx)",
-        data=excel_data,
-        file_name="Man_Machine_Chart_Interleaved.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
+        # Kita buat simulasi waktu berjalan (Simulation Engine)
+        current_time = 0.0
+        # Setiap mesin memiliki status waktu selesai prosesnya
+        mc_available_time = {i: 0.0 for i in range(1, num_machines + 1)}
+        mc_status = {i: "Waiting" for i in range(1, num_machines + 1)}
 
+        # Generasi Process Sheet untuk 1.5 - 2 Siklus agar terlihat kontinuitasnya
+        records = []
+        
+        # Tentukan urutan pekerjaan operator di mesin 1, 2, ..., N
+        cycle_steps = []
+        for mc_id in range(1, num_machines + 1):
+            # Prep work (misal: placing component to pallet)
+            for prep in man_prep_elements:
+                cycle_steps.append({"type": "prep", "mc_id": mc_id, "name": prep["Process"], "dur": prep["Duration"]})
+            # Load / Unload work
+            for mc_elem in [r for r in valid_rows if r["Actor"] == "Both"]:
+                cycle_steps.append({"type": "load", "mc_id": mc_id, "name": mc_elem["Process"], "dur": mc_elem["Duration"]})
+
+        # Jalankan siklus simulasi 2x loop untuk menggambarkan stabilitas rantai proses
+        sim_time = 0.0
+        mc_timeline = {i: [] for i in range(1, num_machines + 1)}
+        
+        for loop in range(2):
+            for step in cycle_steps:
+                mc_id = step["mc_id"]
+                dur = step["dur"]
+                act_name = step["name"]
+                
+                start_t = sim_time
+                end_t = sim_time + dur
+                
+                # Update status operator & mesin target
+                row = {
+                    "Accumulated Time (s)": round(end_t, 2),
+                    "Operator Activity": f"[{f'MC {mc_id}'}] {act_name}",
+                    "Op Duration (s)": round(dur, 2)
+                }
+                
+                for m in range(1, num_machines + 1):
+                    if m == mc_id and step["type"] == "load":
+                        row[f"Machine {m}"] = act_name
+                    elif end_t <= mc_available_time[m]:
+                        row[f"Machine {m}"] = "Running / Process"
+                    else:
+                        row[f"Machine {m}"] = "Idle / Waiting"
+
+                # Jika langkah ini menyalakan mesin
+                if step["type"] == "load":
+                    mc_available_time[mc_id] = end_t + machine_auto
+
+                records.append(row)
+                sim_time = end_t
+                
+                if travel_time > 0 and step["type"] == "load":
+                    sim_time += travel_time
+
+        process_sheet_df = pd.DataFrame(records)
+
+        st.markdown("---")
+        st.subheader("📋 Dynamic Man-Machine Process Sheet")
+        st.dataframe(process_sheet_df, use_container_width=True)
+
+        # Download Excel
+        buffer = io.BytesIO()
+        with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+            summary_df.to_excel(writer, index=False, sheet_name="Summary")
+            process_sheet_df.to_excel(writer, index=False, sheet_name="Process Sheet")
+        
+        st.download_button(
+            label="📥 Download Laporan Excel (.xlsx)",
+            data=buffer.getvalue(),
+            file_name="Man_Machine_Dynamic_Analysis.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+
+    else:
+        st.warning("Mohon pastikan durasi elemen proses Man dan Machine diisi dengan angka > 0.")
 else:
-    st.info("Ketik nama proses dan durasi di tabel atas.")
+    st.info("Masukkan elemen proses pada tabel di atas.")
