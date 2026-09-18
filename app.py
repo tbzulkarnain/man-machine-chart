@@ -25,6 +25,7 @@ default_data = [
     {"Process": "Placing component to pallet", "Duration": 15.02, "Actor": "Man"},
     {"Process": "Loading - Unloading", "Duration": 4.48, "Actor": "Both"},
     {"Process": "St Process", "Duration": 51.72, "Actor": "Machine"},
+    {"Process": "Loading - Unloading", "Duration": 4.48, "Actor": "Both"},
     {"Process": "take result", "Duration": 2.47, "Actor": "Man"},
 ]
 
@@ -49,7 +50,7 @@ valid_rows = edited_df[
 ].to_dict("records")
 
 if valid_rows:
-    # 1. HITUNG ELEMEN UTAMA
+    # 1. HITUNG ELEMEN UTAMA DARI INPUT DATA
     man_work_per_mc = sum(r["Duration"] for r in valid_rows if r["Actor"] in ["Man", "Both"])
     mc_cycle_time = sum(r["Duration"] for r in valid_rows if r["Actor"] in ["Both", "Machine"])
 
@@ -101,61 +102,52 @@ if valid_rows:
         st.subheader(f"📊 Summary ({num_machines} Mesin)")
         st.table(summary_df)
 
-        # 3. GENERATOR PROCESS SHEET VISUAL (INTERLEAVED TIMELINE)
-        p_place = next((r for r in valid_rows if "PLACE" in r["Process"].upper() or "PALLET" in r["Process"].upper()), None)
-        p_load = next((r for r in valid_rows if "LOAD" in r["Process"].upper()), None)
-        p_stitch = next((r for r in valid_rows if "ST" in r["Process"].upper() or "MACHINE" in r["Actor"].upper()), None)
-        p_take = next((r for r in valid_rows if "TAKE" in r["Process"].upper() or "RESULT" in r["Process"].upper()), None)
-
-        place_dur = p_place["Duration"] if p_place else 15.02
-        load_dur = p_load["Duration"] if p_load else 4.48
-        stitch_dur = p_stitch["Duration"] if p_stitch else 51.72
-        take_dur = p_take["Duration"] if p_take else 2.47
-
-        place_name = p_place["Process"] if p_place else "Placing component to pallet"
-        load_name = p_load["Process"] if p_load else "Loading - Unloading"
-        stitch_name = p_stitch["Process"] if p_stitch else "St Process"
-        take_name = p_take["Process"] if p_take else "take result"
-
-        # Susun Event Row Dinamis
+        # 3. GENERATOR EVENT PROCESS SHEET DINAMIS (FULL SIMULASI)
         chart_rows = []
-        if num_machines == 2:
-            chart_rows = [
-                {"Time (s)": 15.02, "Operator": place_name, "Op Time": 15.02, "Machine 1": "waiting", "MC 1 Time": 15.02, "Machine 2": "waiting", "MC 2 Time": 15.02},
-                {"Time (s)": 19.50, "Operator": load_name, "Op Time": 4.48, "Machine 1": load_name, "MC 1 Time": 4.48, "Machine 2": "waiting", "MC 2 Time": 4.48},
-                {"Time (s)": 34.52, "Operator": place_name, "Op Time": 15.02, "Machine 1": stitch_name, "MC 1 Time": stitch_dur, "Machine 2": "waiting", "MC 2 Time": 15.02},
-                {"Time (s)": 39.00, "Operator": load_name, "Op Time": 4.48, "Machine 1": "", "MC 1 Time": "", "Machine 2": load_name, "MC 2 Time": 4.48},
-                {"Time (s)": 54.02, "Operator": place_name, "Op Time": 15.02, "Machine 1": "", "MC 1 Time": "", "Machine 2": stitch_name, "MC 2 Time": stitch_dur},
-                {"Time (s)": 71.22, "Operator": "idle", "Op Time": 17.20, "Machine 1": "", "MC 1 Time": "", "Machine 2": "", "MC 2 Time": ""},
-                {"Time (s)": 75.70, "Operator": load_name, "Op Time": 4.48, "Machine 1": load_name, "MC 1 Time": 4.48, "Machine 2": "", "MC 2 Time": ""},
-                {"Time (s)": 78.17, "Operator": take_name, "Op Time": 2.47, "Machine 1": stitch_name, "MC 1 Time": stitch_dur, "Machine 2": "idle", "MC 2 Time": 2.47},
-                {"Time (s)": 90.72, "Operator": place_name, "Op Time": 15.02, "Machine 1": stitch_name, "MC 1 Time": stitch_dur, "Machine 2": load_name, "MC 2 Time": 4.48},
-                {"Time (s)": 97.67, "Operator": load_name, "Op Time": 4.48, "Machine 1": "", "MC 1 Time": "", "Machine 2": stitch_name, "MC 2 Time": stitch_dur},
-                {"Time (s)": 100.14, "Operator": take_name, "Op Time": 2.47, "Machine 1": "", "MC 1 Time": "", "Machine 2": "", "MC 2 Time": ""},
-                {"Time (s)": 115.16, "Operator": place_name, "Op Time": 15.02, "Machine 1": "", "MC 1 Time": "", "Machine 2": "", "MC 2 Time": ""},
-                {"Time (s)": 127.42, "Operator": "idle", "Op Time": 12.26, "Machine 1": "", "MC 1 Time": "", "Machine 2": "", "MC 2 Time": ""},
-                {"Time (s)": 131.90, "Operator": load_name, "Op Time": 4.48, "Machine 1": load_name, "MC 1 Time": 4.48, "Machine 2": "", "MC 2 Time": ""},
-            ]
-        else:
-            # Generic generator jika memilih selain 2 mesin
-            acc = 0.0
-            for loop in range(2):
-                for m_idx in range(1, num_machines + 1):
-                    for r in valid_rows:
-                        acc += r["Duration"]
-                        r_dict = {
-                            "Time (s)": round(acc, 2),
-                            "Operator": f"[{f'MC {m_idx}'}] {r['Process']}",
-                            "Op Time": r["Duration"]
+        op_tasks = [r for r in valid_rows if r["Actor"] in ["Man", "Both"]]
+
+        curr_time = 0.0
+        mc_finish_time = {m: 0.0 for m in range(1, num_machines + 1)}
+
+        # Simulasi 2 Siklus Kerja
+        for cycle in range(2):
+            for m in range(1, num_machines + 1):
+                # A. Cek Waktu Tunggu Operator (Idle)
+                if curr_time < mc_finish_time[m]:
+                    idle_dur = round(mc_finish_time[m] - curr_time, 2)
+                    if idle_dur > 0:
+                        curr_time = round(curr_time + idle_dur, 2)
+                        row_idle = {
+                            "Time (s)": curr_time,
+                            "Operator": "idle",
+                            "Op Time": idle_dur
                         }
                         for k in range(1, num_machines + 1):
-                            if k == m_idx:
-                                r_dict[f"Machine {k}"] = r["Process"]
-                                r_dict[f"MC {k} Time"] = r["Duration"]
-                            else:
-                                r_dict[f"Machine {k}"] = "running / waiting"
-                                r_dict[f"MC {k} Time"] = r["Duration"]
-                        chart_rows.append(r_dict)
+                            row_idle[f"Machine {k}"] = ""
+                            row_idle[f"MC {k} Time"] = ""
+                        chart_rows.append(row_idle)
+
+                # B. Eksekusi Aktivitas Operator di Mesin m
+                for task in op_tasks:
+                    curr_time = round(curr_time + task["Duration"], 2)
+                    row_task = {
+                        "Time (s)": curr_time,
+                        "Operator": task["Process"],
+                        "Op Time": task["Duration"]
+                    }
+                    
+                    for k in range(1, num_machines + 1):
+                        if k == m:
+                            row_task[f"Machine {k}"] = task["Process"] if task["Actor"] == "Both" else "St Process"
+                            row_task[f"MC {k} Time"] = task["Duration"]
+                        else:
+                            row_task[f"Machine {k}"] = ""
+                            row_task[f"MC {k} Time"] = ""
+                    
+                    chart_rows.append(row_task)
+                
+                # Update waktu selesai mesin m secara realistis
+                mc_finish_time[m] = round(curr_time + mc_cycle_time - man_work_per_mc, 2)
 
         process_sheet_df = pd.DataFrame(chart_rows)
 
