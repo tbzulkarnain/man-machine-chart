@@ -2,17 +2,14 @@ import streamlit as st
 import pandas as pd
 
 # ==========================================
-# 1. KONFIGURASI HALAMAN
+# 1. KONFIGURASI HALAMAN & INPUT
 # ==========================================
 st.set_page_config(page_title="Universal MMC Generator", layout="wide")
 st.title("⚙️ Universal Man-Machine Chart (MMC) Generator")
 
-# ==========================================
-# 2. INPUT PARAMETER
-# ==========================================
 col1, col2 = st.columns(2)
 with col1:
-    num_machines = st.number_input("Jumlah Mesin", min_value=1, max_value=10, value=5, step=1)
+    num_machines = st.number_input("Jumlah Mesin", min_value=1, max_value=10, value=2, step=1)
 with col2:
     num_cycles = st.number_input("Jumlah Siklus Simulasi", min_value=1, max_value=10, value=2, step=1)
 
@@ -20,183 +17,191 @@ st.subheader("1. Tabel Urutan Proses Kerja")
 
 if "table_data" not in st.session_state:
     st.session_state.table_data = pd.DataFrame([
-        {"Proses": "Placing component", "Cycle Time (s)": 43.33, "Aktor": "Man"},
-        {"Proses": "Hot Press", "Cycle Time (s)": 160.0, "Aktor": "Machine"},
-        {"Proses": "Take result / Unload", "Cycle Time (s)": 9.0, "Aktor": "Man"}
+        {"Proses": "placing component to palet", "Cycle Time (s)": 15.02, "Aktor": "Man"},
+        {"Proses": "loading unloading 1", "Cycle Time (s)": 4.48, "Aktor": "Both"},
+        {"Proses": "stitching process", "Cycle Time (s)": 51.72, "Aktor": "Machine"},
+        {"Proses": "loading unloading 2", "Cycle Time (s)": 4.48, "Aktor": "Both"},
+        {"Proses": "take result", "Cycle Time (s)": 2.47, "Aktor": "Man"}
     ])
 
-# Tabel input interaktif
 edited_df = st.data_editor(
     st.session_state.table_data,
     num_rows="dynamic",
     column_config={
         "Proses": st.column_config.TextColumn("Nama Elemen Proses", required=True),
-        "Cycle Time (s)": st.column_config.NumberColumn("Cycle Time (s)", min_value=0.1, format="%.2f", required=True),
+        "Cycle Time (s)": st.column_config.NumberColumn("Cycle Time (s)", min_value=0.01, format="%.2f", required=True),
         "Aktor": st.column_config.SelectboxColumn("Aktor", options=["Man", "Machine", "Both"], required=True),
     },
     use_container_width=True
 )
 
 # ==========================================
-# 3. ENGINE UNIVERSAL (MEMBACA DINAMIS TANPA HARDCODE)
+# 2. SIMULATION ENGINE UNIVERSAL SEJATI
 # ==========================================
 
-def get_process_times(df):
-    """Membaca waktu proses secara universal dari tabel input"""
-    # Mencari waktu Load (Man sebelum Machine)
-    man_tasks = df[df['Aktor'].isin(['Man', 'Both'])]
-    mc_tasks = df[df['Aktor'] == 'Machine']
+def run_universal_mmc(df_steps, n_mc, n_cycles):
+    steps = df_steps.to_dict('records')
     
-    # Ambil durasi berdasarkan urutan baris
-    place_t = man_tasks.iloc[0]['Cycle Time (s)'] if len(man_tasks) > 0 else 10.0
-    press_t = mc_tasks.iloc[0]['Cycle Time (s)'] if len(mc_tasks) > 0 else 60.0
-    take_t = man_tasks.iloc[1]['Cycle Time (s)'] if len(man_tasks) > 1 else (man_tasks.iloc[0]['Cycle Time (s)'] if len(man_tasks) > 0 else 5.0)
+    # Inisialisasi State
+    op_free_at = 0.0
+    mc_states = {m: {"free_at": 0.0, "step_idx": 0, "cycle": 0, "curr_act": "waiting"} for m in range(1, n_mc + 1)}
     
-    # Nama aktivitas
-    place_name = man_tasks.iloc[0]['Proses'] if len(man_tasks) > 0 else "Loading"
-    press_name = mc_tasks.iloc[0]['Proses'] if len(mc_tasks) > 0 else "Processing"
-    take_name = man_tasks.iloc[1]['Proses'] if len(man_tasks) > 1 else "Unloading"
+    # Event Log
+    events = [] # list of {start, end, actor_type, mc_id, act_name}
     
-    return place_t, press_t, take_t, place_name, press_name, take_name
-
-
-def generate_mmc_schedule(df_input, n_mc, n_cycles):
-    place_time, press_time, take_time, place_name, press_name, take_name = get_process_times(df_input)
-
-    machines = [{"id": i+1, "status": "idle_empty", "next_free_time": 0.0, "cycle_count": 0} for i in range(n_mc)]
-    op_free_time = 0.0
-    events = []
-
-    while any(m["cycle_count"] < n_cycles for m in machines):
-        m_unload = next((m for m in machines if m["status"] == "finished_waiting_unload" and m["cycle_count"] < n_cycles), None)
-        m_load = next((m for m in machines if m["status"] == "idle_empty" and m["cycle_count"] < n_cycles), None)
+    # Loop Simulasi
+    while any(mc_states[m]["cycle"] < n_cycles for m in range(1, n_mc + 1)):
+        # Cari aksi berikutnya yang bisa dieksekusi oleh Operator atau Mesin
+        # Prioritas: Unloading/Both/Man yang pending -> Loading/Both -> Machine Automatic
         
-        if m_unload:
-            start_t = max(op_free_time, m_unload["next_free_time"])
-            end_t = start_t + take_time
-            events.append({
-                "start": start_t, "end": end_t,
-                "op": f"{take_name} MC {m_unload['id']}",
-                "mc_act": {m_unload['id']: take_name},
-                "type": "unload"
-            })
-            op_free_time = end_t
-            m_unload["status"] = "idle_empty"
-            m_unload["cycle_count"] += 1
-            m_unload["next_free_time"] = end_t
-
-        elif m_load:
-            start_t = op_free_time
-            end_t = start_t + place_time
-            events.append({
-                "start": start_t, "end": end_t,
-                "op": f"{place_name} MC {m_load['id']}",
-                "mc_act": {m_load['id']: place_name},
-                "type": "load"
-            })
-            op_free_time = end_t
-            m_load["status"] = "pressing"
-            m_load["next_free_time"] = end_t + press_time
-
-        else:
-            next_event = min(m["next_free_time"] for m in machines if m["status"] == "pressing")
-            if next_event > op_free_time:
-                events.append({
-                    "start": op_free_time, "end": next_event,
-                    "op": "idle",
-                    "mc_act": {},
-                    "type": "idle"
-                })
-                op_free_time = next_event
+        candidates = []
+        for m in range(1, n_mc + 1):
+            if mc_states[m]["cycle"] >= n_cycles:
+                continue
             
-            for m in machines:
-                if m["status"] == "pressing" and m["next_free_time"] <= op_free_time:
-                    m["status"] = "finished_waiting_unload"
+            idx = mc_states[m]["step_idx"]
+            step = steps[idx]
+            
+            if step["Aktor"] in ["Man", "Both"]:
+                ready_time = max(op_free_at, mc_states[m]["free_at"])
+                candidates.append({
+                    "mc_id": m,
+                    "ready_time": ready_time,
+                    "step_idx": idx,
+                    "step": step
+                })
+        
+        if candidates:
+            # Pilih candidate dengan waktu paling awal
+            candidates.sort(key=lambda x: (x["ready_time"], x["mc_id"]))
+            chosen = candidates[0]
+            
+            m = chosen["mc_id"]
+            step = chosen["step"]
+            start_t = chosen["ready_time"]
+            
+            # Jika operator harus menunggu sebelum mulai
+            if start_t > op_free_time:
+                events.append({
+                    "start": op_free_time,
+                    "end": start_t,
+                    "op_act": "idle",
+                    "mc_acts": {i: "waiting" if mc_states[i]["free_at"] <= op_free_time else mc_states[i]["curr_act"] for i in range(1, n_mc + 1)}
+                })
+            
+            end_t = start_t + float(step["Cycle Time (s)"])
+            
+            # Catat aktivitas
+            mc_acts_snapshot = {}
+            for i in range(1, n_mc + 1):
+                if i == m:
+                    mc_acts_snapshot[i] = step["Proses"]
+                else:
+                    mc_acts_snapshot[i] = mc_states[i]["curr_act"] if mc_states[i]["free_at"] > start_t else "waiting"
+            
+            events.append({
+                "start": start_t,
+                "end": end_t,
+                "op_act": f"{step['Proses']} MC {m}",
+                "mc_acts": mc_acts_snapshot
+            })
+            
+            # Update State
+            op_free_at = end_t
+            mc_states[m]["free_at"] = end_t
+            mc_states[m]["curr_act"] = step["Proses"]
+            
+            # Advance step
+            mc_states[m]["step_idx"] += 1
+            if mc_states[m]["step_idx"] >= len(steps):
+                mc_states[m]["step_idx"] = 0
+                mc_states[m]["cycle"] += 1
+                
+            # Jika step berikutnya adalah "Machine" murni, langsung trigger otomatis!
+            if mc_states[m]["cycle"] < n_cycles:
+                next_idx = mc_states[m]["step_idx"]
+                next_step = steps[next_idx]
+                if next_step["Aktor"] == "Machine":
+                    mc_states[m]["curr_act"] = next_step["Proses"]
+                    mc_states[m]["free_at"] = end_t + float(next_step["Cycle Time (s)"])
+                    mc_states[m]["step_idx"] += 1
+                    if mc_states[m]["step_idx"] >= len(steps):
+                        mc_states[m]["step_idx"] = 0
+                        mc_states[m]["cycle"] += 1
+        else:
+            # Jika tidak ada aktivitas operator, majukan waktu ke event mesin selesai paling awal
+            active_mcs = [mc_states[i]["free_at"] for i in range(1, n_mc + 1) if mc_states[i]["cycle"] < n_cycles]
+            if not active_mcs:
+                break
+            next_mc_finish = min(active_mcs)
+            if next_mc_finish > op_free_at:
+                mc_acts_snapshot = {}
+                for i in range(1, n_mc + 1):
+                    mc_acts_snapshot[i] = mc_states[i]["curr_act"] if mc_states[i]["free_at"] > op_free_at else "waiting"
+                
+                events.append({
+                    "start": op_free_at,
+                    "end": next_mc_finish,
+                    "op_act": "idle",
+                    "mc_acts": mc_acts_snapshot
+                })
+                op_free_at = next_mc_finish
 
-    table_rows = []
-    mc_states = {i+1: {"status": "waiting", "until": 0.0} for i in range(n_mc)}
-
+    # Format ke DataFrame
+    rows = []
     for ev in events:
         dur = round(ev["end"] - ev["start"], 2)
-        row = {
+        r = {
             "Time (s)": round(ev["end"], 2),
-            "Operator Activity": ev["op"],
+            "Operator Activity": ev["op_act"],
             "Op Time": dur
         }
+        for m in range(1, n_mc + 1):
+            r[f"MC {m} Activity"] = ev["mc_acts"].get(m, "waiting")
+            r[f"MC {m} Time"] = dur
+        rows.append(r)
         
-        for mc_id in range(1, n_mc + 1):
-            if mc_id in ev["mc_act"]:
-                act = ev["mc_act"][mc_id]
-                if act == place_name:
-                    mc_states[mc_id] = {"status": press_name, "until": ev["end"] + press_time}
-                elif act == take_name:
-                    mc_states[mc_id] = {"status": "waiting", "until": 0.0}
-                row[f"MC {mc_id} Activity"] = act
-            else:
-                if mc_states[mc_id]["status"] == press_name and ev["start"] < mc_states[mc_id]["until"]:
-                    row[f"MC {mc_id} Activity"] = press_name
-                else:
-                    row[f"MC {mc_id} Activity"] = "waiting"
-            
-            row[f"MC {mc_id} Time"] = dur
-
-        table_rows.append(row)
-
-    return pd.DataFrame(table_rows)
+    return pd.DataFrame(rows)
 
 
-def generate_summary_table(df_input, n_mc):
-    place_t, press_t, take_t, _, _, _ = get_process_times(df_input)
-
-    # Kalkulasi Dinamis IE
-    mc_pure_work = place_t + press_t + take_t
-    op_pure_work = n_mc * (place_t + take_t)
-
-    total_cycle = max(mc_pure_work, op_pure_work)
-
-    op_idle_time = max(0.0, total_cycle - op_pure_work)
-    op_utilization = (op_pure_work / total_cycle) * 100 if total_cycle > 0 else 0.0
-
-    mc_idle_time = max(0.0, total_cycle - mc_pure_work)
-    mc_utilization = (mc_pure_work / total_cycle) * 100 if total_cycle > 0 else 0.0
-
+def run_summary_matrix(df_steps, n_mc):
+    steps = df_steps.to_dict('records')
+    
+    man_time = sum(float(s["Cycle Time (s)"]) for s in steps if s["Aktor"] in ["Man", "Both"])
+    mc_time = sum(float(s["Cycle Time (s)"]) for s in steps if s["Aktor"] in ["Machine", "Both"])
+    
+    total_op_work = man_time * n_mc
+    single_mc_work = mc_time + sum(float(s["Cycle Time (s)"]) for s in steps if s["Aktor"] == "Man")
+    
+    total_cycle = max(single_mc_work, total_op_work)
+    
+    op_idle = max(0.0, total_cycle - total_op_work)
+    op_util = (total_op_work / total_cycle) * 100 if total_cycle > 0 else 0.0
+    
+    mc_idle = max(0.0, total_cycle - single_mc_work)
+    mc_util = (single_mc_work / total_cycle) * 100 if total_cycle > 0 else 0.0
+    
     summary_dict = {
-        "Summary": [
-            "Working time",
-            "Idle time",
-            "Total cycle time",
-            "Utilization in percent"
-        ],
-        "Man Power": [
-            f"{op_pure_work:.2f}",
-            f"{op_idle_time:.2f}",
-            f"{total_cycle:.2f}",
-            f"{op_utilization:.0f}%"
-        ]
+        "Summary": ["Working time", "Idle time", "Total cycle time", "Utilization in percent"],
+        "Man Power": [f"{total_op_work:.2f}", f"{op_idle:.2f}", f"{total_cycle:.2f}", f"{op_util:.0f}%"]
     }
-
+    
     for i in range(1, n_mc + 1):
-        summary_dict[f"MC {i}"] = [
-            f"{mc_pure_work:.2f}",
-            f"{mc_idle_time:.2f}",
-            f"{total_cycle:.2f}",
-            f"{mc_utilization:.0f}%"
-        ]
-
+        summary_dict[f"MC {i}"] = [f"{single_mc_work:.2f}", f"{mc_idle:.2f}", f"{total_cycle:.2f}", f"{mc_util:.0f}%"]
+        
     return pd.DataFrame(summary_dict)
 
-
 # ==========================================
-# 4. TAMPILKAN HASIL OTOMATIS BERUBAH (REACTIVE)
+# 3. RENDER HASIL
 # ==========================================
 st.markdown("---")
 st.subheader("2. Hasil Simulasi Man-Machine Chart (MMC)")
 
-result_df = generate_mmc_schedule(edited_df, num_machines, num_cycles)
-st.dataframe(result_df, use_container_width=True)
+res_df = run_universal_mmc(edited_df, num_machines, num_cycles)
+st.dataframe(res_df, use_container_width=True)
 
 st.markdown("---")
 st.subheader("📊 Summary Performance Matrix (1 Loop Steady State)")
 
-summary_df = generate_summary_table(edited_df, num_machines)
-st.dataframe(summary_df, use_container_width=True, hide_index=True)
+sum_df = run_summary_matrix(edited_df, num_machines)
+st.dataframe(sum_df, use_container_width=True, hide_index=True)
