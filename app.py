@@ -1,5 +1,8 @@
 import streamlit as st
 import pandas as pd
+import io
+import json
+import urllib.request
 
 # ==========================================
 # 1. PAGE CONFIGURATION & STYLING
@@ -34,27 +37,47 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
+# ==========================================
+# 2. VISITOR COUNTER ENGINE
+# ==========================================
+def get_global_visitor_count():
+    try:
+        url = "https://api.counterapi.dev/v1/footwear-mmc-simulator-tz/visits/up"
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req, timeout=3) as response:
+            data = json.loads(response.read().decode())
+            return data.get('count', '1+')
+    except Exception:
+        return "1+"
+
+# Sidebar Configuration
+st.sidebar.title("📌 Portfolio Info")
+st.sidebar.info("This application models Man-Machine Charts (MMC) for footwear manufacturing process optimization.")
+
+visitor_count = get_global_visitor_count()
+st.sidebar.metric(label="👁️ Total Portfolio Visitors", value=visitor_count)
+
+# ==========================================
+# 3. HEADER & USER GUIDE
+# ==========================================
 st.markdown('<div class="main-title">👞 Footwear Manufacturing: Man-Machine Chart (MMC) Simulator</div>', unsafe_allow_html=True)
 st.markdown('<div class="sub-title">Industrial Engineering Tool for Multi-Machine Workstation Optimization & Idle Time Analysis</div>', unsafe_allow_html=True)
 
-# ==========================================
-# 2. QUICK USER GUIDE
-# ==========================================
 with st.container():
     st.markdown("""
     <div class="guide-box">
         <h4>📌 Quick User Guide</h4>
         <ol>
-            <li><b>Configure Simulation Parameters:</b> Set the number of active machines and simulation cycles on the top control panel.</li>
-            <li><b>Set Process Sequence:</b> Edit the cycle times, process steps, and actor assignment in the table below (Default data represents Shoe Upper Stitching Process).</li>
+            <li><b>Configure Simulation Parameters:</b> Set the number of active machines and simulation cycles on the control panel below.</li>
+            <li><b>Set Process Sequence:</b> Edit the cycle times, process steps, and actor assignment in the table (Default data represents Shoe Upper Stitching Process).</li>
             <li><b>Analyze Dynamic MMC Output:</b> Review the step-by-step Gantt simulation timeline to spot operator idle times and machine bottlenecks.</li>
-            <li><b>Evaluate Summary Matrix:</b> Check overall labor utilization and line capacity in the performance summary.</li>
+            <li><b>Download Excel Report:</b> Click the <b>Download MMC Result (Excel)</b> button to export the simulation data for further engineering analysis.</li>
         </ol>
     </div>
     """, unsafe_allow_html=True)
 
 # ==========================================
-# 3. CONTROL PANEL & PROCESS INPUT TABLE
+# 4. CONTROL PANEL & PROCESS INPUT TABLE
 # ==========================================
 st.subheader("⚙️ 1. Workstation & Process Configuration")
 
@@ -64,8 +87,8 @@ with col1:
 with col2:
     num_cycles = st.number_input("Simulation Cycles", min_value=1, max_value=10, value=2, step=1)
 
-# Default data tailored for Shoe Upper Stitching / Footwear Assembly
-if "table_data" not in st.session_state:
+# Reset & auto-heal session_state jika terjadi bentrok nama kolom
+if "table_data" not in st.session_state or "Process Step" not in st.session_state.table_data.columns:
     st.session_state.table_data = pd.DataFrame([
         {"Process Step": "Placing upper component to pallet", "Cycle Time (s)": 15.02, "Actor": "Man"},
         {"Process Step": "Loading & Unloading Shoe Upper", "Cycle Time (s)": 4.48, "Actor": "Both"},
@@ -85,7 +108,7 @@ edited_df = st.data_editor(
 )
 
 # ==========================================
-# 4. SIMULATION ENGINE
+# 5. SIMULATION ENGINE
 # ==========================================
 
 def run_universal_mmc(df_input, n_mc, n_cycles):
@@ -175,7 +198,7 @@ def run_universal_mmc(df_input, n_mc, n_cycles):
     return pd.DataFrame(rows)
 
 # ==========================================
-# 5. SUMMARY PERFORMANCE MATRIX
+# 6. SUMMARY PERFORMANCE MATRIX
 # ==========================================
 
 def run_summary_matrix_steady_state(df_input, n_mc):
@@ -219,30 +242,51 @@ def run_summary_matrix_steady_state(df_input, n_mc):
 
     return pd.DataFrame(summary_dict)
 
+# Helper function untuk konversi DataFrame ke Excel Binary
+def convert_df_to_excel(df_timeline, df_summary):
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        df_timeline.to_excel(writer, sheet_name='MMC Timeline', index=False)
+        df_summary.to_excel(writer, sheet_name='Performance Summary', index=False)
+    return output.getvalue()
+
 # ==========================================
-# 6. RENDER OUTPUT & VISUALS
+# 7. RENDER OUTPUT & VISUALS
 # ==========================================
 st.markdown("---")
 st.subheader("📊 2. Dynamic Man-Machine Simulation Timeline")
 
 res_df = run_universal_mmc(edited_df, num_machines, num_cycles)
+
 if not res_df.empty:
     st.dataframe(res_df, use_container_width=True)
+    
+    st.markdown("---")
+    st.subheader("📈 3. Steady-State Workstation Performance Matrix")
+    
+    sum_df = run_summary_matrix_steady_state(edited_df, num_machines)
+    
+    if not sum_df.empty:
+        # Display key metrics at top of summary
+        col_m1, col_m2, col_m3 = st.columns(3)
+        with col_m1:
+            st.metric("Total Cycle Time", f"{sum_df.iloc[2, 1]} s")
+        with col_m2:
+            st.metric("Operator Utilization", f"{sum_df.iloc[3, 1]}")
+        with col_m3:
+            st.metric("Operator Idle Time", f"{sum_df.iloc[1, 1]} s")
+
+        st.dataframe(sum_df, use_container_width=True, hide_index=True)
+
+        # Download Excel Section
+        st.markdown("<br>", unsafe_allow_html=True)
+        excel_data = convert_df_to_excel(res_df, sum_df)
+        st.download_button(
+            label="📥 Download MMC Result (Excel .xlsx)",
+            data=excel_data,
+            file_name=f"MMC_Simulation_{num_machines}MC_{num_cycles}Cycles.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True
+        )
 else:
     st.warning("⚠️ Please provide valid process steps in the table above to run the simulation.")
-
-st.markdown("---")
-st.subheader("📈 3. Steady-State Workstation Performance Matrix")
-
-sum_df = run_summary_matrix_steady_state(edited_df, num_machines)
-if not sum_df.empty:
-    # Display key metrics at top of summary
-    col_m1, col_m2, col_m3 = st.columns(3)
-    with col_m1:
-        st.metric("Total Cycle Time", f"{sum_df.iloc[2, 1]} s")
-    with col_m2:
-        st.metric("Operator Utilization", f"{sum_df.iloc[3, 1]}")
-    with col_m3:
-        st.metric("Operator Idle Time", f"{sum_df.iloc[1, 1]} s")
-
-    st.dataframe(sum_df, use_container_width=True, hide_index=True)
