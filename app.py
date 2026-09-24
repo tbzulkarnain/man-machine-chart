@@ -1,79 +1,147 @@
+import streamlit as st
 import pandas as pd
 
-def generate_correct_mmc(num_machines, num_cycles, process_list):
-    """
-    process_list contoh:
-    [
-        {"Proses": "Placing component", "Cycle Time (s)": 43.3, "Aktor": "Both"}, # Atau Man/Both
-        {"Proses": "hot press", "Cycle Time (s)": 160.0, "Aktor": "Machine"},
-        {"Proses": "take result", "Cycle Time (s)": 9.0, "Aktor": "Both"}
-    ]
-    """
-    # Dapatkan durasi elemen proses
-    place_time = next(p["Cycle Time (s)"] for p in process_list if "Placing" in p["Proses"] or p["Aktor"] in ["Man", "Both"])
-    press_time = next(p["Cycle Time (s)"] for p in process_list if "press" in p["Proses"].lower() or p["Aktor"] == "Machine")
-    take_time = next(p["Cycle Time (s)"] for p in process_list if "take" in p["Proses"].lower() or "Unloading" in p["Proses"])
+# ==========================================
+# 1. KONFIGURASI HALAMAN STREAMLIT
+# ==========================================
+st.set_page_config(page_title="Universal MMC Generator", layout="wide")
+st.title("⚙️ Universal Man-Machine Chart (MMC) Generator")
 
-    # State Mesin: status ('idle_empty', 'loading', 'pressing', 'finished_waiting_unload', 'unloading')
-    # State Operator: available_time
-    machines = [{"id": i+1, "status": "idle_empty", "next_free_time": 0.0, "cycle_count": 0} for i in range(num_machines)]
+# ==========================================
+# 2. INPUT PARAMETER
+# ==========================================
+col1, col2 = st.columns(2)
+with col1:
+    num_machines = st.number_input("Jumlah Mesin", min_value=1, max_value=10, value=3, step=1)
+with col2:
+    num_cycles = st.number_input("Jumlah Siklus Simulasi", min_value=1, max_value=10, value=2, step=1)
+
+st.subheader("1. Tabel Urutan Proses Kerja")
+
+# Default Data
+if "table_data" not in st.session_state:
+    st.session_state.table_data = pd.DataFrame([
+        {"Proses": "Placing component", "Cycle Time (s)": 43.3, "Aktor": "Man"},
+        {"Proses": "Hot Press", "Cycle Time (s)": 160.0, "Aktor": "Machine"},
+        {"Proses": "Take result / Unload", "Cycle Time (s)": 9.0, "Aktor": "Man"}
+    ])
+
+edited_df = st.data_editor(
+    st.session_state.table_data,
+    num_rows="dynamic",
+    column_config={
+        "Proses": st.column_config.TextColumn("Nama Elemen Proses", required=True),
+        "Cycle Time (s)": st.column_config.NumberColumn("Cycle Time (s)", min_value=0.1, format="%.1f", required=True),
+        "Aktor": st.column_config.SelectboxColumn("Aktor", options=["Man", "Machine", "Both"], required=True),
+    },
+    use_container_width=True
+)
+
+# ==========================================
+# 3. ENGINE SIMULASI MMC (LOGIKA DIPERBAIKI)
+# ==========================================
+def generate_mmc_schedule(df_input, n_mc, n_cycles):
+    # Ekstraksi waktu elemen proses
+    place_row = df_input[df_input['Aktor'].isin(['Man', 'Both']) & df_input['Proses'].str.contains('Placing|Loading|Place', case=False, na=False)]
+    press_row = df_input[df_input['Aktor'] == 'Machine']
+    take_row = df_input[df_input['Aktor'].isin(['Man', 'Both']) & df_input['Proses'].str.contains('Take|Unloading|Unload', case=False, na=False)]
     
-    current_time = 0.0
-    op_free_time = 0.0
-    timeline = []
+    place_time = place_row['Cycle Time (s)'].values[0] if len(place_row) > 0 else 43.3
+    press_time = press_row['Cycle Time (s)'].values[0] if len(press_row) > 0 else 160.0
+    take_time = take_row['Cycle Time (s)'].values[0] if len(take_row) > 0 else 9.0
 
-    # Eksekusi simulasi sampai semua mesin menyelesaikan jumlah siklus
-    while any(m["cycle_count"] < num_cycles for m in machines):
+    # Inisialisasi State Mesin
+    machines = [{"id": i+1, "status": "idle_empty", "next_free_time": 0.0, "cycle_count": 0} for i in range(n_mc)]
+    op_free_time = 0.0
+    events = []
+
+    while any(m["cycle_count"] < n_cycles for m in machines):
+        m_unload = next((m for m in machines if m["status"] == "finished_waiting_unload" and m["cycle_count"] < n_cycles), None)
+        m_load = next((m for m in machines if m["status"] == "idle_empty" and m["cycle_count"] < n_cycles), None)
         
-        # 1. Cari aksi terbaik untuk operator pada current_time / op_free_time
-        # Prioritas A: Unload Mesin yang sudah selesai press
-        m_to_unload = None
-        for m in machines:
-            if m["status"] == "finished_waiting_unload" and m["cycle_count"] < num_cycles:
-                m_to_unload = m
-                break
-        
-        # Prioritas B: Load Mesin yang masih kosong/idle
-        m_to_load = None
-        if not m_to_unload:
-            for m in machines:
-                if m["status"] == "idle_empty" and m["cycle_count"] < num_cycles:
-                    m_to_load = m
-                    break
-                    
-        # Jika ada yang bisa di-Unload oleh Operator
-        if m_to_unload:
-            start_t = max(op_free_time, m_to_unload["next_free_time"])
-            duration = take_time
-            end_t = start_t + duration
-            
-            # Catat log event
+        if m_unload:
+            start_t = max(op_free_time, m_unload["next_free_time"])
+            end_t = start_t + take_time
+            events.append({
+                "start": start_t, "end": end_t,
+                "op": f"take result MC {m_unload['id']}",
+                "mc_act": {m_unload['id']: "take result"},
+                "type": "unload"
+            })
             op_free_time = end_t
-            m_to_unload["status"] = "idle_empty"
-            m_to_unload["cycle_count"] += 1
-            m_to_unload["next_free_time"] = end_t
-            
-        # Jika ada yang bisa di-Load oleh Operator
-        elif m_to_load:
+            m_unload["status"] = "idle_empty"
+            m_unload["cycle_count"] += 1
+            m_unload["next_free_time"] = end_t
+
+        elif m_load:
             start_t = op_free_time
-            duration = place_time
-            end_t = start_t + duration
-            
+            end_t = start_t + place_time
+            events.append({
+                "start": start_t, "end": end_t,
+                "op": f"Placing component MC {m_load['id']}",
+                "mc_act": {m_load['id']: "Placing component"},
+                "type": "load"
+            })
             op_free_time = end_t
-            m_to_load["status"] = "pressing"
-            # Mesin mulai pressing tepat setelah di-load
-            m_to_load["next_free_time"] = end_t + press_time 
-            
+            m_load["status"] = "pressing"
+            m_load["next_free_time"] = end_t + press_time
+
         else:
-            # Jika semua mesin sedang pressing, operator IDLE sampai mesin pertama selesai pressing
-            next_event_time = min(m["next_free_time"] for m in machines if m["status"] == "pressing")
-            if next_event_time > op_free_time:
-                op_free_time = next_event_time
+            next_event = min(m["next_free_time"] for m in machines if m["status"] == "pressing")
+            if next_event > op_free_time:
+                events.append({
+                    "start": op_free_time, "end": next_event,
+                    "op": "idle",
+                    "mc_act": {},
+                    "type": "idle"
+                })
+                op_free_time = next_event
             
-            # Update status mesin yang selesai pressing
             for m in machines:
                 if m["status"] == "pressing" and m["next_free_time"] <= op_free_time:
                     m["status"] = "finished_waiting_unload"
 
-    # [Bagian ini memformat hasil simulasi ke dalam DataFrame tabel MMC seperti yang kamu tampilkan di UI]
-    # ...
+    # Formatting ke bentuk Tabel UI MMC
+    table_rows = []
+    # Track status running tiap mesin
+    mc_states = {i+1: {"status": "waiting", "until": 0.0} for i in range(n_mc)}
+
+    for ev in events:
+        dur = round(ev["end"] - ev["start"], 1)
+        row = {
+            "Time (s)": round(ev["end"], 1),
+            "Operator Activity": ev["op"],
+            "Op Time": dur
+        }
+        
+        # Tentukan status aktivitas tiap mesin dalam rentang waktu event ini
+        for mc_id in range(1, n_mc + 1):
+            if mc_id in ev["mc_act"]:
+                act = ev["mc_act"][mc_id]
+                if act == "Placing component":
+                    mc_states[mc_id] = {"status": "hot press", "until": ev["end"] + press_time}
+                elif act == "take result":
+                    mc_states[mc_id] = {"status": "waiting", "until": 0.0}
+                row[f"MC {mc_id} Activity"] = act
+            else:
+                if mc_states[mc_id]["status"] == "hot press" and ev["start"] < mc_states[mc_id]["until"]:
+                    row[f"MC {mc_id} Activity"] = "hot press"
+                else:
+                    row[f"MC {mc_id} Activity"] = "waiting"
+            
+            row[f"MC {mc_id} Time"] = dur
+
+        table_rows.append(row)
+
+    return pd.DataFrame(table_rows)
+
+# ==========================================
+# 4. TAMPILKAN HASIL TABEL MMC
+# ==========================================
+st.subheader("2. Hasil Simulasi Man-Machine Chart (MMC)")
+
+if st.button("🚀 Generate MMC Chart", type="primary"):
+    result_df = generate_mmc_schedule(edited_df, num_machines, num_cycles)
+    
+    # MENAMPILKAN TABEL KELUARAN KE UI STREAMLIT
+    st.dataframe(result_df, use_container_width=True)
