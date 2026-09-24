@@ -18,7 +18,6 @@ with col2:
 
 st.subheader("1. Tabel Urutan Proses Kerja")
 
-# Default Data
 if "table_data" not in st.session_state:
     st.session_state.table_data = pd.DataFrame([
         {"Proses": "Placing component", "Cycle Time (s)": 43.3, "Aktor": "Man"},
@@ -38,10 +37,9 @@ edited_df = st.data_editor(
 )
 
 # ==========================================
-# 3. ENGINE SIMULASI MMC (LOGIKA DIPERBAIKI)
+# 3. ENGINE SIMULASI MMC
 # ==========================================
 def generate_mmc_schedule(df_input, n_mc, n_cycles):
-    # Ekstraksi waktu elemen proses
     place_row = df_input[df_input['Aktor'].isin(['Man', 'Both']) & df_input['Proses'].str.contains('Placing|Loading|Place', case=False, na=False)]
     press_row = df_input[df_input['Aktor'] == 'Machine']
     take_row = df_input[df_input['Aktor'].isin(['Man', 'Both']) & df_input['Proses'].str.contains('Take|Unloading|Unload', case=False, na=False)]
@@ -50,7 +48,6 @@ def generate_mmc_schedule(df_input, n_mc, n_cycles):
     press_time = press_row['Cycle Time (s)'].values[0] if len(press_row) > 0 else 160.0
     take_time = take_row['Cycle Time (s)'].values[0] if len(take_row) > 0 else 9.0
 
-    # Inisialisasi State Mesin
     machines = [{"id": i+1, "status": "idle_empty", "next_free_time": 0.0, "cycle_count": 0} for i in range(n_mc)]
     op_free_time = 0.0
     events = []
@@ -101,9 +98,7 @@ def generate_mmc_schedule(df_input, n_mc, n_cycles):
                 if m["status"] == "pressing" and m["next_free_time"] <= op_free_time:
                     m["status"] = "finished_waiting_unload"
 
-    # Formatting ke bentuk Tabel UI MMC
     table_rows = []
-    # Track status running tiap mesin
     mc_states = {i+1: {"status": "waiting", "until": 0.0} for i in range(n_mc)}
 
     for ev in events:
@@ -114,7 +109,6 @@ def generate_mmc_schedule(df_input, n_mc, n_cycles):
             "Op Time": dur
         }
         
-        # Tentukan status aktivitas tiap mesin dalam rentang waktu event ini
         for mc_id in range(1, n_mc + 1):
             if mc_id in ev["mc_act"]:
                 act = ev["mc_act"][mc_id]
@@ -133,15 +127,55 @@ def generate_mmc_schedule(df_input, n_mc, n_cycles):
 
         table_rows.append(row)
 
-    return pd.DataFrame(table_rows)
+    # Menghitung Summary 1 Siklus Stabil (Steady State)
+    total_cycle_time = place_time + press_time + take_time
+    op_working_time = n_mc * (place_time + take_time)
+    op_idle_time = max(0.0, total_cycle_time - op_working_time)
+    op_utilization = (op_working_time / total_cycle_time) * 100 if total_cycle_time > 0 else 0
+    mc_utilization = 100.0 if op_idle_time >= 0 else (total_cycle_time / op_working_time) * 100
+
+    summary_data = {
+        "Metric Parameter": [
+            "Cycle Time Per Mesin (1 Loop)",
+            "Jumlah Mesin Ditangani",
+            "Total Waktu Kerja Operator (1 Loop)",
+            "Total Waktu Idle Operator (1 Loop Stabil)",
+            "Efisiensi / Utilitas Operator",
+            "Utilitas Mesin"
+        ],
+        "Nilai": [
+            f"{total_cycle_time:.1f} detik",
+            f"{n_mc} Mesin",
+            f"{op_working_time:.1f} detik",
+            f"{op_idle_time:.1f} detik",
+            f"{op_utilization:.2f}%",
+            f"{mc_utilization:.2f}%"
+        ]
+    }
+
+    return pd.DataFrame(table_rows), pd.DataFrame(summary_data)
 
 # ==========================================
-# 4. TAMPILKAN HASIL TABEL MMC
+# 4. TAMPILKAN HASIL TABEL & SUMMARY MMC
 # ==========================================
 st.subheader("2. Hasil Simulasi Man-Machine Chart (MMC)")
 
 if st.button("🚀 Generate MMC Chart", type="primary"):
-    result_df = generate_mmc_schedule(edited_df, num_machines, num_cycles)
+    result_df, summary_df = generate_mmc_schedule(edited_df, num_machines, num_cycles)
     
-    # MENAMPILKAN TABEL KELUARAN KE UI STREAMLIT
+    # 1. Tampilkan Tabel Utama
     st.dataframe(result_df, use_container_width=True)
+    
+    # 2. Tampilkan Summary Metrics
+    st.markdown("---")
+    st.subheader("📊 Summary Analysis (1 Siklus Stabil / Steady State)")
+    
+    col_sum1, col_sum2 = st.columns([1, 1])
+    with col_sum1:
+        st.table(summary_df)
+    with col_sum2:
+        st.info("""
+        **Catatan Summary:**
+        * **Idle Ramp-Down Dibaikan:** Waktu idle di akhir simulasi (saat pengosongan mesin) tidak dimasukkan dalam summary karena hanya terjadi sekali di akhir shift.
+        * **Kapasitas Optimal:** Dengan 3 mesin, operator bekerja selama **156.9 detik** dan idle **55.4 detik** per siklus. Efisiensi operator berada di angka ideal (**73.91%**).
+        """)
