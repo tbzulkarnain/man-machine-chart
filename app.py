@@ -76,17 +76,14 @@ def run_universal_mmc(df_input, n_mc, n_cycles):
             idx = mc_states[m]["step_idx"]
             step = steps[idx]
             
-            # Jika step ini melibatkan Man atau Both
             if step["Aktor"] in ["Man", "Both"]:
-                # Waktu kapan operator & mesin siap untuk interaksi ini
                 ready_t = op_free_at
                 
-                # Jika langkah 'Both', mesin juga harus bebas jahit sebelumnya
                 if step["Aktor"] == "Both":
                     ready_t = max(op_free_at, mc_states[m]["free_at"])
-                    prio = 1 # Both dapat prioritas utama
+                    prio = 1
                 else:
-                    prio = 2 # Man
+                    prio = 2
                 
                 candidates.append({
                     "mc_id": m,
@@ -130,7 +127,6 @@ def run_universal_mmc(df_input, n_mc, n_cycles):
                     if step["Aktor"] == "Both":
                         mc_acts_snapshot[i] = step["Proses"]
                     else:
-                        # Jika mesin m sedang dalam proses berjalan (misal Stitch Process)
                         if mc_states[i]["is_running"] and mc_states[i]["free_at"] > start_t:
                             mc_acts_snapshot[i] = mc_states[i]["curr_act"]
                         else:
@@ -161,23 +157,19 @@ def run_universal_mmc(df_input, n_mc, n_cycles):
                 mc_states[m]["cycle"] += 1
 
             # --- PEMICU KUNCI MESIN (TRIGGER MACHINE) ---
-            # Jika setelah aksi ini (misal Both), step berikutnya atau step terdekat di urutan adalah 'Machine', JALANKAN MESIN SEGERA!
             curr_idx = mc_states[m]["step_idx"]
             if mc_states[m]["cycle"] < n_cycles:
-                # Periksa apakah step saat ini/selanjutnya adalah 'Machine' (Stitch Process)
                 if steps[curr_idx]["Aktor"] == "Machine":
                     mc_step = steps[curr_idx]
                     mc_states[m]["curr_act"] = mc_step["Proses"]
                     mc_states[m]["is_running"] = True
                     mc_states[m]["free_at"] = end_t + float(mc_step["Cycle Time (s)"])
                     
-                    # Advance step index mesin
                     mc_states[m]["step_idx"] += 1
                     if mc_states[m]["step_idx"] >= num_steps:
                         mc_states[m]["step_idx"] = 0
                         mc_states[m]["cycle"] += 1
                 elif step["Aktor"] == "Both":
-                    # Jika langkahnya Both (Loading-Unloading), picu mesin jika Stitch Process ada di daftar
                     for s_i, s_val in enumerate(steps):
                         if s_val["Aktor"] == "Machine":
                             mc_states[m]["curr_act"] = s_val["Proses"]
@@ -186,7 +178,6 @@ def run_universal_mmc(df_input, n_mc, n_cycles):
                             break
                             
         else:
-            # Mengatasi saat operator idle menunggu mesin selesai
             future_times = [mc_states[i]["free_at"] for i in range(1, n_mc + 1) if mc_states[i]["cycle"] < n_cycles and mc_states[i]["free_at"] > op_free_at]
             if future_times:
                 next_t = min(future_times)
@@ -230,7 +221,8 @@ def run_summary_matrix(df_input, n_mc):
 
     steps = df_clean.to_dict('records')
     
-    man_time = sum(float(s["Cycle Time (s)"]) for s me in steps if s["Aktor"] in ["Man", "Both"])
+    # PERBAIKAN TYPO DI SINI
+    man_time = sum(float(s["Cycle Time (s)"]) for s in steps if s["Aktor"] in ["Man", "Both"])
     mc_time = sum(float(s["Cycle Time (s)"]) for s in steps if s["Aktor"] in ["Machine", "Both"])
     
     total_op_work = man_time * n_mc
