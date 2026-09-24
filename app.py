@@ -25,6 +25,7 @@ if "table_data" not in st.session_state:
         {"Proses": "Take result / Unload", "Cycle Time (s)": 9.0, "Aktor": "Man"}
     ])
 
+# Tabel input interaktif
 edited_df = st.data_editor(
     st.session_state.table_data,
     num_rows="dynamic",
@@ -37,17 +38,30 @@ edited_df = st.data_editor(
 )
 
 # ==========================================
-# 3. FUNGSI LOGIKA MMC & SUMMARY
+# 3. ENGINE UNIVERSAL (MEMBACA DINAMIS TANPA HARDCODE)
 # ==========================================
 
-def generate_mmc_schedule(df_input, n_mc, n_cycles):
-    place_row = df_input[df_input['Aktor'].isin(['Man', 'Both']) & df_input['Proses'].str.contains('Placing|Loading|Place', case=False, na=False)]
-    press_row = df_input[df_input['Aktor'] == 'Machine']
-    take_row = df_input[df_input['Aktor'].isin(['Man', 'Both']) & df_input['Proses'].str.contains('Take|Unloading|Unload', case=False, na=False)]
+def get_process_times(df):
+    """Membaca waktu proses secara universal dari tabel input"""
+    # Mencari waktu Load (Man sebelum Machine)
+    man_tasks = df[df['Aktor'].isin(['Man', 'Both'])]
+    mc_tasks = df[df['Aktor'] == 'Machine']
     
-    place_time = place_row['Cycle Time (s)'].values[0] if len(place_row) > 0 else 43.33
-    press_time = press_row['Cycle Time (s)'].values[0] if len(press_row) > 0 else 160.0
-    take_time = take_row['Cycle Time (s)'].values[0] if len(take_row) > 0 else 9.0
+    # Ambil durasi berdasarkan urutan baris
+    place_t = man_tasks.iloc[0]['Cycle Time (s)'] if len(man_tasks) > 0 else 10.0
+    press_t = mc_tasks.iloc[0]['Cycle Time (s)'] if len(mc_tasks) > 0 else 60.0
+    take_t = man_tasks.iloc[1]['Cycle Time (s)'] if len(man_tasks) > 1 else (man_tasks.iloc[0]['Cycle Time (s)'] if len(man_tasks) > 0 else 5.0)
+    
+    # Nama aktivitas
+    place_name = man_tasks.iloc[0]['Proses'] if len(man_tasks) > 0 else "Loading"
+    press_name = mc_tasks.iloc[0]['Proses'] if len(mc_tasks) > 0 else "Processing"
+    take_name = man_tasks.iloc[1]['Proses'] if len(man_tasks) > 1 else "Unloading"
+    
+    return place_t, press_t, take_t, place_name, press_name, take_name
+
+
+def generate_mmc_schedule(df_input, n_mc, n_cycles):
+    place_time, press_time, take_time, place_name, press_name, take_name = get_process_times(df_input)
 
     machines = [{"id": i+1, "status": "idle_empty", "next_free_time": 0.0, "cycle_count": 0} for i in range(n_mc)]
     op_free_time = 0.0
@@ -62,8 +76,8 @@ def generate_mmc_schedule(df_input, n_mc, n_cycles):
             end_t = start_t + take_time
             events.append({
                 "start": start_t, "end": end_t,
-                "op": f"take result MC {m_unload['id']}",
-                "mc_act": {m_unload['id']: "take result"},
+                "op": f"{take_name} MC {m_unload['id']}",
+                "mc_act": {m_unload['id']: take_name},
                 "type": "unload"
             })
             op_free_time = end_t
@@ -76,8 +90,8 @@ def generate_mmc_schedule(df_input, n_mc, n_cycles):
             end_t = start_t + place_time
             events.append({
                 "start": start_t, "end": end_t,
-                "op": f"Placing component MC {m_load['id']}",
-                "mc_act": {m_load['id']: "Placing component"},
+                "op": f"{place_name} MC {m_load['id']}",
+                "mc_act": {m_load['id']: place_name},
                 "type": "load"
             })
             op_free_time = end_t
@@ -103,9 +117,9 @@ def generate_mmc_schedule(df_input, n_mc, n_cycles):
     mc_states = {i+1: {"status": "waiting", "until": 0.0} for i in range(n_mc)}
 
     for ev in events:
-        dur = round(ev["end"] - ev["start"], 1)
+        dur = round(ev["end"] - ev["start"], 2)
         row = {
-            "Time (s)": round(ev["end"], 1),
+            "Time (s)": round(ev["end"], 2),
             "Operator Activity": ev["op"],
             "Op Time": dur
         }
@@ -113,14 +127,14 @@ def generate_mmc_schedule(df_input, n_mc, n_cycles):
         for mc_id in range(1, n_mc + 1):
             if mc_id in ev["mc_act"]:
                 act = ev["mc_act"][mc_id]
-                if act == "Placing component":
-                    mc_states[mc_id] = {"status": "hot press", "until": ev["end"] + press_time}
-                elif act == "take result":
+                if act == place_name:
+                    mc_states[mc_id] = {"status": press_name, "until": ev["end"] + press_time}
+                elif act == take_name:
                     mc_states[mc_id] = {"status": "waiting", "until": 0.0}
                 row[f"MC {mc_id} Activity"] = act
             else:
-                if mc_states[mc_id]["status"] == "hot press" and ev["start"] < mc_states[mc_id]["until"]:
-                    row[f"MC {mc_id} Activity"] = "hot press"
+                if mc_states[mc_id]["status"] == press_name and ev["start"] < mc_states[mc_id]["until"]:
+                    row[f"MC {mc_id} Activity"] = press_name
                 else:
                     row[f"MC {mc_id} Activity"] = "waiting"
             
@@ -132,15 +146,9 @@ def generate_mmc_schedule(df_input, n_mc, n_cycles):
 
 
 def generate_summary_table(df_input, n_mc):
-    place_row = df_input[df_input['Aktor'].isin(['Man', 'Both']) & df_input['Proses'].str.contains('Placing|Loading|Place', case=False, na=False)]
-    press_row = df_input[df_input['Aktor'] == 'Machine']
-    take_row = df_input[df_input['Aktor'].isin(['Man', 'Both']) & df_input['Proses'].str.contains('Take|Unloading|Unload', case=False, na=False)]
-    
-    place_t = place_row['Cycle Time (s)'].values[0] if len(place_row) > 0 else 43.33
-    press_t = press_row['Cycle Time (s)'].values[0] if len(press_row) > 0 else 160.0
-    take_t = take_row['Cycle Time (s)'].values[0] if len(take_row) > 0 else 9.0
+    place_t, press_t, take_t, _, _, _ = get_process_times(df_input)
 
-    # Kalkulasi Akurat IE (Idle Machine & Operator)
+    # Kalkulasi Dinamis IE
     mc_pure_work = place_t + press_t + take_t
     op_pure_work = n_mc * (place_t + take_t)
 
@@ -179,18 +187,16 @@ def generate_summary_table(df_input, n_mc):
 
 
 # ==========================================
-# 4. TAMPILKAN LANGSUNG TANPA TOMBOL (REACTIVE)
+# 4. TAMPILKAN HASIL OTOMATIS BERUBAH (REACTIVE)
 # ==========================================
 st.markdown("---")
 st.subheader("2. Hasil Simulasi Man-Machine Chart (MMC)")
 
-# Eksekusi langsung
 result_df = generate_mmc_schedule(edited_df, num_machines, num_cycles)
 st.dataframe(result_df, use_container_width=True)
 
 st.markdown("---")
 st.subheader("📊 Summary Performance Matrix (1 Loop Steady State)")
 
-# Render summary langsung
 summary_df = generate_summary_table(edited_df, num_machines)
 st.dataframe(summary_df, use_container_width=True, hide_index=True)
