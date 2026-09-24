@@ -35,7 +35,7 @@ edited_df = st.data_editor(
 )
 
 # ==========================================
-# 2. SIMULATION ENGINE MMC
+# 2. SIMULATION ENGINE MMC (LOGIKA SEKUENSIAL)
 # ==========================================
 
 def run_universal_mmc(df_input, n_mc, n_cycles):
@@ -44,154 +44,102 @@ def run_universal_mmc(df_input, n_mc, n_cycles):
         return pd.DataFrame()
 
     steps = df_clean.to_dict('records')
-    num_steps = len(steps)
     
+    # Kelompokkan elemen kerja berdasarkan Aktor
+    prep_steps = [s for s in steps if s["Aktor"] == "Man"]         # Contoh: Placing, Take Result
+    load_steps = [s for s in steps if s["Aktor"] == "Both"]        # Contoh: Loading-Unloading
+    machine_steps = [s for s in steps if s["Aktor"] == "Machine"]  # Contoh: Stitch / Hot Press
+    
+    # Identifikasi Placing (persiapan awal) dan Take Result (pengambilan hasil)
+    placing_step = prep_steps[0] if prep_steps else None
+    take_result_step = prep_steps[1] if len(prep_steps) > 1 else None
+    loading_step = load_steps[0] if load_steps else None
+    mc_step = machine_steps[0] if machine_steps else None
+
     op_free_at = 0.0
+    mc_states = {m: {"free_at": 0.0, "is_running": False, "curr_act": "waiting"} for m in range(1, n_mc + 1)}
     
-    mc_states = {}
-    for m in range(1, n_mc + 1):
-        mc_states[m] = {
-            "free_at": 0.0,
-            "step_idx": 0,
-            "cycle": 0,
-            "curr_act": "waiting",
-            "is_running": False
-        }
-        
     events = []
-    max_steps = 1500
-    step_count = 0
 
-    while any(mc_states[m]["cycle"] < n_cycles for m in range(1, n_mc + 1)) and step_count < max_steps:
-        step_count += 1
-        
-        candidates = []
-        
-        for m in range(1, n_mc + 1):
-            if mc_states[m]["cycle"] >= n_cycles:
-                continue
-            
-            idx = mc_states[m]["step_idx"]
-            step = steps[idx]
-            
-            if step["Aktor"] in ["Man", "Both"]:
-                ready_t = op_free_at
-                
-                if step["Aktor"] == "Both":
-                    ready_t = max(op_free_at, mc_states[m]["free_at"])
-                    prio = 1
-                else:
-                    prio = 2
-                
-                candidates.append({
-                    "mc_id": m,
-                    "ready_time": ready_t,
-                    "priority": prio,
-                    "step_idx": idx,
-                    "step": step
-                })
-
-        if candidates:
-            candidates.sort(key=lambda x: (x["ready_time"], x["priority"], x["mc_id"]))
-            chosen = candidates[0]
-            
-            m = chosen["mc_id"]
-            step = chosen["step"]
-            start_t = chosen["ready_time"]
-            
-            if start_t > op_free_at:
-                mc_snapshot_idle = {}
-                for i in range(1, n_mc + 1):
-                    if mc_states[i]["is_running"] and mc_states[i]["free_at"] > op_free_at:
-                        mc_snapshot_idle[i] = mc_states[i]["curr_act"]
-                    else:
-                        mc_snapshot_idle[i] = "waiting"
-                        
-                events.append({
-                    "start": op_free_at,
-                    "end": start_t,
-                    "op_act": "idle",
-                    "mc_acts": mc_snapshot_idle
-                })
-            
-            end_t = start_t + float(step["Cycle Time (s)"])
-            
-            mc_acts_snapshot = {}
-            for i in range(1, n_mc + 1):
-                if i == m:
-                    if step["Aktor"] == "Both":
-                        mc_acts_snapshot[i] = step["Proses"]
-                    else:
-                        if mc_states[i]["is_running"] and mc_states[i]["free_at"] > start_t:
-                            mc_acts_snapshot[i] = mc_states[i]["curr_act"]
-                        else:
-                            mc_acts_snapshot[i] = "waiting"
-                else:
-                    if mc_states[i]["is_running"] and mc_states[i]["free_at"] > start_t:
-                        mc_acts_snapshot[i] = mc_states[i]["curr_act"]
-                    else:
-                        mc_acts_snapshot[i] = "waiting"
-            
-            op_label = step['Proses']
-            if n_mc > 1 and "MC" not in op_label:
-                op_label = f"{step['Proses']} MC {m}"
-                
-            events.append({
-                "start": start_t,
-                "end": end_t,
-                "op_act": op_label,
-                "mc_acts": mc_acts_snapshot
-            })
-            
-            op_free_at = end_t
-            
-            mc_states[m]["step_idx"] += 1
-            if mc_states[m]["step_idx"] >= num_steps:
-                mc_states[m]["step_idx"] = 0
-                mc_states[m]["cycle"] += 1
-
-            # Trigger Mesin Otomatis (Stitch Process) Setelah Loading-Unloading
-            curr_idx = mc_states[m]["step_idx"]
-            if mc_states[m]["cycle"] < n_cycles:
-                if steps[curr_idx]["Aktor"] == "Machine":
-                    mc_step = steps[curr_idx]
-                    mc_states[m]["curr_act"] = mc_step["Proses"]
-                    mc_states[m]["is_running"] = True
-                    mc_states[m]["free_at"] = end_t + float(mc_step["Cycle Time (s)"])
-                    
-                    mc_states[m]["step_idx"] += 1
-                    if mc_states[m]["step_idx"] >= num_steps:
-                        mc_states[m]["step_idx"] = 0
-                        mc_states[m]["cycle"] += 1
-                elif step["Aktor"] == "Both":
-                    for s_val in steps:
-                        if s_val["Aktor"] == "Machine":
-                            mc_states[m]["curr_act"] = s_val["Proses"]
-                            mc_states[m]["is_running"] = True
-                            mc_states[m]["free_at"] = end_t + float(s_val["Cycle Time (s)"])
-                            break
-                            
-        else:
-            future_times = [mc_states[i]["free_at"] for i in range(1, n_mc + 1) if mc_states[i]["cycle"] < n_cycles and mc_states[i]["free_at"] > op_free_at]
-            if future_times:
-                next_t = min(future_times)
-                mc_snapshot_idle = {}
-                for i in range(1, n_mc + 1):
-                    if mc_states[i]["is_running"] and mc_states[i]["free_at"] > op_free_at:
-                        mc_snapshot_idle[i] = mc_states[i]["curr_act"]
-                    else:
-                        mc_snapshot_idle[i] = "waiting"
-                        
-                events.append({
-                    "start": op_free_at,
-                    "end": next_t,
-                    "op_act": "idle",
-                    "mc_acts": mc_snapshot_idle
-                })
-                op_free_at = next_t
+    def get_mc_snapshot(active_mc, active_act, current_time):
+        snapshot = {}
+        for i in range(1, n_mc + 1):
+            if i == active_mc and active_act:
+                snapshot[i] = active_act
+            elif mc_states[i]["is_running"] and mc_states[i]["free_at"] > current_time:
+                snapshot[i] = mc_states[i]["curr_act"]
             else:
-                break
+                snapshot[i] = "waiting"
+        return snapshot
 
+    # Iterasi berdasarkan Siklus Simulasi
+    for cycle in range(n_cycles):
+        for m in range(1, n_mc + 1):
+            
+            # --- ELEMEN 1: TAKE RESULT (Siklus ke-2 dst/setelah mesin selesai) ---
+            if cycle > 0 and take_result_step:
+                dur = float(take_result_step["Cycle Time (s)"])
+                start_t = op_free_at
+                end_t = start_t + dur
+                
+                events.append({
+                    "start": start_t,
+                    "end": end_t,
+                    "op_act": f"{take_result_step['Proses']} MC {m}",
+                    "mc_acts": get_mc_snapshot(m, take_result_step["Proses"], start_t)
+                })
+                op_free_at = end_t
+
+            # --- ELEMEN 2: PLACING COMPONENT ---
+            if placing_step:
+                dur = float(placing_step["Cycle Time (s)"])
+                start_t = op_free_at
+                end_t = start_t + dur
+                
+                events.append({
+                    "start": start_t,
+                    "end": end_t,
+                    "op_act": f"{placing_step['Proses']} MC {m}",
+                    "mc_acts": get_mc_snapshot(m, None, start_t)
+                })
+                op_free_at = end_t
+
+            # --- ELEMEN 3: IDLE OPERATOR (Jika Mesin Masih Jalan saat Operator Siap Loading) ---
+            if mc_states[m]["is_running"] and mc_states[m]["free_at"] > op_free_at:
+                idle_start = op_free_at
+                idle_end = mc_states[m]["free_at"]
+                
+                events.append({
+                    "start": idle_start,
+                    "end": idle_end,
+                    "op_act": "idle",
+                    "mc_acts": get_mc_snapshot(None, None, idle_start)
+                })
+                op_free_at = idle_end
+                mc_states[m]["is_running"] = False
+
+            # --- ELEMEN 4: LOADING - UNLOADING (Both Man & Machine) ---
+            if loading_step:
+                dur = float(loading_step["Cycle Time (s)"])
+                start_t = op_free_at
+                end_t = start_t + dur
+                
+                events.append({
+                    "start": start_t,
+                    "end": end_t,
+                    "op_act": f"{loading_step['Proses']} MC {m}",
+                    "mc_acts": get_mc_snapshot(m, loading_step["Proses"], start_t)
+                })
+                op_free_at = end_t
+
+            # --- ELEMEN 5: STITCH / HOT PRESS (Machine Process Auto Trigger) ---
+            if mc_step:
+                dur = float(mc_step["Cycle Time (s)"])
+                mc_states[m]["is_running"] = True
+                mc_states[m]["curr_act"] = mc_step["Proses"]
+                mc_states[m]["free_at"] = op_free_at + dur
+
+    # Formating Output DataFrame
     rows = []
     for ev in events:
         dur = round(ev["end"] - ev["start"], 2)
@@ -218,21 +166,14 @@ def run_summary_matrix_steady_state(df_input, n_mc):
 
     steps = df_clean.to_dict('records')
     
-    # Perhitungan Durasi per Mesin
     op_work_per_mc = sum(float(s["Cycle Time (s)"]) for s in steps if s["Aktor"] in ["Man", "Both"])
     mc_work_per_mc = sum(float(s["Cycle Time (s)"]) for s in steps if s["Aktor"] in ["Machine", "Both"])
     op_manual_per_mc = sum(float(s["Cycle Time (s)"]) for s in steps if s["Aktor"] == "Man")
     
-    # Total Waktu Kerja Operator Dalam 1 Loop Steady State
     total_op_work_steady = op_work_per_mc * n_mc
-    
-    # Cycle Time 1 Mesin (Waktu Mesin + Waktu Manual Operator untuk Mesin Tersebut)
     single_mc_cycle = mc_work_per_mc + op_manual_per_mc
-    
-    # Bottleneck Cycle Time 1 Loop Steady State
     steady_cycle_time = max(total_op_work_steady, single_mc_cycle)
 
-    # 1. Man Power Performance
     op_idle_steady = max(0.0, steady_cycle_time - total_op_work_steady)
     op_util_steady = (total_op_work_steady / steady_cycle_time * 100) if steady_cycle_time > 0 else 0
 
@@ -246,7 +187,6 @@ def run_summary_matrix_steady_state(df_input, n_mc):
         ]
     }
 
-    # 2. Machine Performance
     for m in range(1, n_mc + 1):
         mc_idle_steady = max(0.0, steady_cycle_time - single_mc_cycle)
         mc_util_steady = (single_mc_cycle / steady_cycle_time * 100) if steady_cycle_time > 0 else 0
