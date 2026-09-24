@@ -35,7 +35,7 @@ edited_df = st.data_editor(
 )
 
 # ==========================================
-# 2. SIMULATION ENGINE PERBAIKAN STATUS MESIN
+# 2. SIMULATION ENGINE MMC
 # ==========================================
 
 def run_universal_mmc(df_input, n_mc, n_cycles):
@@ -48,7 +48,7 @@ def run_universal_mmc(df_input, n_mc, n_cycles):
     
     op_free_at = 0.0
     
-    # State tracking mesin
+    # State tracking tiap mesin
     mc_states = {}
     for m in range(1, n_mc + 1):
         mc_states[m] = {
@@ -56,7 +56,7 @@ def run_universal_mmc(df_input, n_mc, n_cycles):
             "step_idx": 0,
             "cycle": 0,
             "curr_act": "waiting",
-            "curr_actor": "None"
+            "is_running": False
         }
         
     events = []
@@ -68,20 +68,25 @@ def run_universal_mmc(df_input, n_mc, n_cycles):
         
         candidates = []
         
-        # 1. Cek mesin yang butuh interaksi operator (Both / Man)
+        # Cari langkah berikutnya yang membutuhkan operator (Man atau Both)
         for m in range(1, n_mc + 1):
             if mc_states[m]["cycle"] >= n_cycles:
                 continue
+            
             idx = mc_states[m]["step_idx"]
             step = steps[idx]
             
-            # Jika langkah butuh operator (Man atau Both)
+            # Jika step ini melibatkan Man atau Both
             if step["Aktor"] in ["Man", "Both"]:
-                # Siap dikerjakan jika operator bebas & mesin bebas
-                ready_t = max(op_free_at, mc_states[m]["free_at"])
+                # Waktu kapan operator & mesin siap untuk interaksi ini
+                ready_t = op_free_at
                 
-                # Prioritas: Both (Unload/Load) > Man (Take Result / Placing)
-                prio = 1 if step["Aktor"] == "Both" else 2
+                # Jika langkah 'Both', mesin juga harus bebas jahit sebelumnya
+                if step["Aktor"] == "Both":
+                    ready_t = max(op_free_at, mc_states[m]["free_at"])
+                    prio = 1 # Both dapat prioritas utama
+                else:
+                    prio = 2 # Man
                 
                 candidates.append({
                     "mc_id": m,
@@ -91,7 +96,7 @@ def run_universal_mmc(df_input, n_mc, n_cycles):
                     "step": step
                 })
 
-        # EKSEKUSI CANDIDATE TERBAIK
+        # EKSEKUSI CANDIDATE
         if candidates:
             candidates.sort(key=lambda x: (x["ready_time"], x["priority"], x["mc_id"]))
             chosen = candidates[0]
@@ -100,11 +105,11 @@ def run_universal_mmc(df_input, n_mc, n_cycles):
             step = chosen["step"]
             start_t = chosen["ready_time"]
             
-            # Record Operator Idle jika ada jeda
+            # Record Operator Idle jika ada gap waktu
             if start_t > op_free_at:
                 mc_snapshot_idle = {}
                 for i in range(1, n_mc + 1):
-                    if mc_states[i]["free_at"] > op_free_at and mc_states[i]["curr_actor"] == "Machine":
+                    if mc_states[i]["is_running"] and mc_states[i]["free_at"] > op_free_at:
                         mc_snapshot_idle[i] = mc_states[i]["curr_act"]
                     else:
                         mc_snapshot_idle[i] = "waiting"
@@ -118,20 +123,20 @@ def run_universal_mmc(df_input, n_mc, n_cycles):
             
             end_t = start_t + float(step["Cycle Time (s)"])
             
-            # Snapshot Status Mesin selama durasi aksi operator ini
+            # Snapshot Status Mesin selama durasi langkah operator ini
             mc_acts_snapshot = {}
             for i in range(1, n_mc + 1):
                 if i == m:
                     if step["Aktor"] == "Both":
                         mc_acts_snapshot[i] = step["Proses"]
                     else:
-                        # Jika mesin m sedang running Stitch Process dari step sebelumnya
-                        if mc_states[i]["free_at"] > start_t and mc_states[i]["curr_actor"] == "Machine":
+                        # Jika mesin m sedang dalam proses berjalan (misal Stitch Process)
+                        if mc_states[i]["is_running"] and mc_states[i]["free_at"] > start_t:
                             mc_acts_snapshot[i] = mc_states[i]["curr_act"]
                         else:
                             mc_acts_snapshot[i] = "waiting"
                 else:
-                    if mc_states[i]["free_at"] > start_t and mc_states[i]["curr_actor"] == "Machine":
+                    if mc_states[i]["is_running"] and mc_states[i]["free_at"] > start_t:
                         mc_acts_snapshot[i] = mc_states[i]["curr_act"]
                     else:
                         mc_acts_snapshot[i] = "waiting"
@@ -149,35 +154,45 @@ def run_universal_mmc(df_input, n_mc, n_cycles):
             
             op_free_at = end_t
             
-            # Advance Step Index setelah aksi Man/Both diselesaikan
+            # Advance step index untuk operator
             mc_states[m]["step_idx"] += 1
             if mc_states[m]["step_idx"] >= num_steps:
                 mc_states[m]["step_idx"] = 0
                 mc_states[m]["cycle"] += 1
 
-            # KUNCI UTAMA: Pemicu Mesin (Stitch Process)
-            # Jika step berikutnya adalah 'Machine', LANGSUNG JALANKAN MESIN dari `end_t` saat ini!
-            while mc_states[m]["cycle"] < n_cycles:
-                next_idx = mc_states[m]["step_idx"]
-                next_step = steps[next_idx]
-                if next_step["Aktor"] == "Machine":
-                    mc_states[m]["curr_act"] = next_step["Proses"]
-                    mc_states[m]["curr_actor"] = "Machine"
-                    mc_states[m]["free_at"] = end_t + float(next_step["Cycle Time (s)"])
+            # --- PEMICU KUNCI MESIN (TRIGGER MACHINE) ---
+            # Jika setelah aksi ini (misal Both), step berikutnya atau step terdekat di urutan adalah 'Machine', JALANKAN MESIN SEGERA!
+            curr_idx = mc_states[m]["step_idx"]
+            if mc_states[m]["cycle"] < n_cycles:
+                # Periksa apakah step saat ini/selanjutnya adalah 'Machine' (Stitch Process)
+                if steps[curr_idx]["Aktor"] == "Machine":
+                    mc_step = steps[curr_idx]
+                    mc_states[m]["curr_act"] = mc_step["Proses"]
+                    mc_states[m]["is_running"] = True
+                    mc_states[m]["free_at"] = end_t + float(mc_step["Cycle Time (s)"])
+                    
+                    # Advance step index mesin
                     mc_states[m]["step_idx"] += 1
                     if mc_states[m]["step_idx"] >= num_steps:
                         mc_states[m]["step_idx"] = 0
                         mc_states[m]["cycle"] += 1
-                else:
-                    break
+                elif step["Aktor"] == "Both":
+                    # Jika langkahnya Both (Loading-Unloading), picu mesin jika Stitch Process ada di daftar
+                    for s_i, s_val in enumerate(steps):
+                        if s_val["Aktor"] == "Machine":
+                            mc_states[m]["curr_act"] = s_val["Proses"]
+                            mc_states[m]["is_running"] = True
+                            mc_states[m]["free_at"] = end_t + float(s_val["Cycle Time (s)"])
+                            break
+                            
         else:
-            # Jika operator menganggur menunggu mesin selesai
+            # Mengatasi saat operator idle menunggu mesin selesai
             future_times = [mc_states[i]["free_at"] for i in range(1, n_mc + 1) if mc_states[i]["cycle"] < n_cycles and mc_states[i]["free_at"] > op_free_at]
             if future_times:
                 next_t = min(future_times)
                 mc_snapshot_idle = {}
                 for i in range(1, n_mc + 1):
-                    if mc_states[i]["free_at"] > op_free_at and mc_states[i]["curr_actor"] == "Machine":
+                    if mc_states[i]["is_running"] and mc_states[i]["free_at"] > op_free_at:
                         mc_snapshot_idle[i] = mc_states[i]["curr_act"]
                     else:
                         mc_snapshot_idle[i] = "waiting"
@@ -215,7 +230,7 @@ def run_summary_matrix(df_input, n_mc):
 
     steps = df_clean.to_dict('records')
     
-    man_time = sum(float(s["Cycle Time (s)"]) for s in steps if s["Aktor"] in ["Man", "Both"])
+    man_time = sum(float(s["Cycle Time (s)"]) for s me in steps if s["Aktor"] in ["Man", "Both"])
     mc_time = sum(float(s["Cycle Time (s)"]) for s in steps if s["Aktor"] in ["Machine", "Both"])
     
     total_op_work = man_time * n_mc
