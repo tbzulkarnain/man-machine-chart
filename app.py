@@ -35,7 +35,7 @@ edited_df = st.data_editor(
 )
 
 # ==========================================
-# 2. SIMULATION ENGINE UNIVERSAL
+# 2. SIMULATION ENGINE UNIVERSAL (EXCEL CONTINUITY LOGIC)
 # ==========================================
 
 def run_universal_mmc(df_input, n_mc, n_cycles):
@@ -48,6 +48,7 @@ def run_universal_mmc(df_input, n_mc, n_cycles):
     
     op_free_at = 0.0
     
+    # Track state mesin & pending take result
     mc_states = {}
     for m in range(1, n_mc + 1):
         mc_states[m] = {
@@ -55,7 +56,8 @@ def run_universal_mmc(df_input, n_mc, n_cycles):
             "step_idx": 0,
             "cycle": 0,
             "curr_act": "waiting",
-            "curr_actor": "None"
+            "curr_actor": "None",
+            "has_unloaded_pallet": False  # Penanda bahwa palet sudah di-Unload dan butuh Take Result
         }
         
     events = []
@@ -66,25 +68,62 @@ def run_universal_mmc(df_input, n_mc, n_cycles):
         step_count += 1
         
         candidates = []
+        
+        # 1. CEK PRIORITAS UTAMA: Machine Selesai Jahit -> Butuh Loading-Unloading (Both)
         for m in range(1, n_mc + 1):
             if mc_states[m]["cycle"] >= n_cycles:
                 continue
-            
             idx = mc_states[m]["step_idx"]
             step = steps[idx]
             
-            if step["Aktor"] in ["Man", "Both"]:
+            if step["Aktor"] == "Both":
+                # Mesin harus sudah selesai jahit (free_at)
                 ready_t = max(op_free_at, mc_states[m]["free_at"])
-                priority = 0 if idx > 0 else 1 
-                
                 candidates.append({
                     "mc_id": m,
                     "ready_time": ready_t,
-                    "priority": priority,
+                    "priority": 1, # Prioritas Tertinggi untuk Unload Mesin yang Selesai
                     "step_idx": idx,
-                    "step": step
+                    "step": step,
+                    "task_type": "both"
                 })
-        
+
+        # 2. CEK PRIORITAS DUA: Palet yang Baru Di-Unload -> Butuh Take Result (Man)
+        if not candidates:
+            for m in range(1, n_mc + 1):
+                if mc_states[m]["has_unloaded_pallet"]:
+                    # Cari step take result
+                    idx = mc_states[m]["step_idx"]
+                    step = steps[idx]
+                    ready_t = op_free_at
+                    candidates.append({
+                        "mc_id": m,
+                        "ready_time": ready_t,
+                        "priority": 2,
+                        "step_idx": idx,
+                        "step": step,
+                        "task_type": "take_result"
+                    })
+
+        # 3. CEK PRIORITAS TIGA: Placing Component (Man)
+        if not candidates:
+            for m in range(1, n_mc + 1):
+                if mc_states[m]["cycle"] >= n_cycles:
+                    continue
+                idx = mc_states[m]["step_idx"]
+                step = steps[idx]
+                if step["Aktor"] == "Man" and not mc_states[m]["has_unloaded_pallet"]:
+                    ready_t = max(op_free_at, mc_states[m]["free_at"])
+                    candidates.append({
+                        "mc_id": m,
+                        "ready_time": ready_t,
+                        "priority": 3,
+                        "step_idx": idx,
+                        "step": step,
+                        "task_type": "prep"
+                    })
+
+        # EKSEKUSI CANDIDATE TERBAIK
         if candidates:
             candidates.sort(key=lambda x: (x["ready_time"], x["priority"], x["mc_id"]))
             chosen = candidates[0]
@@ -93,7 +132,7 @@ def run_universal_mmc(df_input, n_mc, n_cycles):
             step = chosen["step"]
             start_t = chosen["ready_time"]
             
-            # Record operator idle time if waiting
+            # Record operator idle jika menganggur
             if start_t > op_free_at:
                 mc_snapshot_idle = {}
                 for i in range(1, n_mc + 1):
@@ -111,17 +150,15 @@ def run_universal_mmc(df_input, n_mc, n_cycles):
             
             end_t = start_t + float(step["Cycle Time (s)"])
             
-            # --- PENENTUAN STATUS MESIN YANG KETAT ---
+            # Status Mesin
             mc_acts_snapshot = {}
             for i in range(1, n_mc + 1):
                 if i == m:
-                    # Mesin m HANYA mencatat aktivitas jika Aktor = Both
                     if step["Aktor"] == "Both":
                         mc_acts_snapshot[i] = step["Proses"]
                     else:
                         mc_acts_snapshot[i] = "waiting"
                 else:
-                    # Mesin lain HANYA mencatat aktivitas jika sedang running proses beraktor 'Machine'
                     if mc_states[i]["free_at"] > start_t and mc_states[i]["curr_actor"] == "Machine":
                         mc_acts_snapshot[i] = mc_states[i]["curr_act"]
                     else:
@@ -140,22 +177,23 @@ def run_universal_mmc(df_input, n_mc, n_cycles):
             
             op_free_at = end_t
             
+            # Update Logika State & Transisi
             if step["Aktor"] == "Both":
                 mc_states[m]["free_at"] = end_t
                 mc_states[m]["curr_act"] = step["Proses"]
                 mc_states[m]["curr_actor"] = "Both"
-            else:
-                if mc_states[m]["free_at"] <= start_t:
-                    mc_states[m]["curr_act"] = "waiting"
-                    mc_states[m]["curr_actor"] = "None"
-            
-            # Lanjut ke step berikutnya
+                mc_states[m]["has_unloaded_pallet"] = True # Tandai ada palet yang butuh take result
+                
+            elif chosen["task_type"] == "take_result":
+                mc_states[m]["has_unloaded_pallet"] = False # Palet selesai di-take result
+                
+            # Advance Step Index
             mc_states[m]["step_idx"] += 1
             if mc_states[m]["step_idx"] >= num_steps:
                 mc_states[m]["step_idx"] = 0
                 mc_states[m]["cycle"] += 1
                 
-            # Otomatis eksekusi jika step selanjutnya beraktor 'Machine'
+            # Jalankan mesin otomatis jika step berikutnya = 'Machine'
             while mc_states[m]["cycle"] < n_cycles:
                 next_idx = mc_states[m]["step_idx"]
                 next_step = steps[next_idx]
