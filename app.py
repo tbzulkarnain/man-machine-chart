@@ -13,7 +13,7 @@ st.set_page_config(
     layout="wide"
 )
 
-# Custom CSS for polished LinkedIn portfolio look
+# Custom CSS for polished LinkedIn portfolio look & clean footer
 st.markdown("""
     <style>
     .main-title {
@@ -34,6 +34,13 @@ st.markdown("""
         border-radius: 5px;
         margin-bottom: 25px;
     }
+    .footer-text {
+        text-align: center;
+        color: #6B7280;
+        font-size: 13px;
+        padding-top: 20px;
+        padding-bottom: 10px;
+    }
     </style>
 """, unsafe_allow_html=True)
 
@@ -49,13 +56,6 @@ def get_global_visitor_count():
             return data.get('count', '1+')
     except Exception:
         return "1+"
-
-# Sidebar Configuration
-st.sidebar.title("📌 Portfolio Info")
-st.sidebar.info("This application models Man-Machine Charts (MMC) for footwear manufacturing process optimization.")
-
-visitor_count = get_global_visitor_count()
-st.sidebar.metric(label="👁️ Total Portfolio Visitors", value=visitor_count)
 
 # ==========================================
 # 3. HEADER & USER GUIDE
@@ -290,3 +290,13 @@ if not res_df.empty:
         )
 else:
     st.warning("⚠️ Please provide valid process steps in the table above to run the simulation.")
+
+# ==========================================
+# 8. FOOTER WITH SUBTLE VISITOR COUNTER
+# ==========================================
+st.markdown("---")
+visitor_count = get_global_visitor_count()
+st.markdown(
+    f'<div class="footer-text">Footwear Man-Machine Chart Simulator | Industrial Engineering Portfolio | 👁️ Total Visitors: <b>{visitor_count}</b></div>', 
+    unsafe_allow_html=True
+)
