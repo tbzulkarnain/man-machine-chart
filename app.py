@@ -54,7 +54,8 @@ def run_universal_mmc(df_input, n_mc, n_cycles):
             "free_at": 0.0,
             "step_idx": 0,
             "cycle": 0,
-            "curr_act": "waiting"
+            "curr_act": "waiting",
+            "curr_actor": "None"
         }
         
     events = []
@@ -92,28 +93,39 @@ def run_universal_mmc(df_input, n_mc, n_cycles):
             step = chosen["step"]
             start_t = chosen["ready_time"]
             
-            # Catat idle operator jika menganggur
+            # Record operator idle time if waiting
             if start_t > op_free_at:
+                mc_snapshot_idle = {}
+                for i in range(1, n_mc + 1):
+                    if mc_states[i]["free_at"] > op_free_at and mc_states[i]["curr_actor"] == "Machine":
+                        mc_snapshot_idle[i] = mc_states[i]["curr_act"]
+                    else:
+                        mc_snapshot_idle[i] = "waiting"
+                        
                 events.append({
                     "start": op_free_at,
                     "end": start_t,
                     "op_act": "idle",
-                    "mc_acts": {i: mc_states[i]["curr_act"] if mc_states[i]["free_at"] > op_free_at else "waiting" for i in range(1, n_mc + 1)}
+                    "mc_acts": mc_snapshot_idle
                 })
             
             end_t = start_t + float(step["Cycle Time (s)"])
             
-            # Snapshot status mesin:
-            # Mesin HANYA mencatat aktivitas jika Aktor = Both. Jika Man, mesin diset ke 'waiting'
+            # --- PENENTUAN STATUS MESIN YANG KETAT ---
             mc_acts_snapshot = {}
             for i in range(1, n_mc + 1):
                 if i == m:
+                    # Mesin m HANYA mencatat aktivitas jika Aktor = Both
                     if step["Aktor"] == "Both":
                         mc_acts_snapshot[i] = step["Proses"]
                     else:
                         mc_acts_snapshot[i] = "waiting"
                 else:
-                    mc_acts_snapshot[i] = mc_states[i]["curr_act"] if mc_states[i]["free_at"] > start_t else "waiting"
+                    # Mesin lain HANYA mencatat aktivitas jika sedang running proses beraktor 'Machine'
+                    if mc_states[i]["free_at"] > start_t and mc_states[i]["curr_actor"] == "Machine":
+                        mc_acts_snapshot[i] = mc_states[i]["curr_act"]
+                    else:
+                        mc_acts_snapshot[i] = "waiting"
             
             op_label = step['Proses']
             if n_mc > 1 and "MC" not in op_label:
@@ -131,9 +143,11 @@ def run_universal_mmc(df_input, n_mc, n_cycles):
             if step["Aktor"] == "Both":
                 mc_states[m]["free_at"] = end_t
                 mc_states[m]["curr_act"] = step["Proses"]
+                mc_states[m]["curr_actor"] = "Both"
             else:
                 if mc_states[m]["free_at"] <= start_t:
                     mc_states[m]["curr_act"] = "waiting"
+                    mc_states[m]["curr_actor"] = "None"
             
             # Lanjut ke step berikutnya
             mc_states[m]["step_idx"] += 1
@@ -141,12 +155,13 @@ def run_universal_mmc(df_input, n_mc, n_cycles):
                 mc_states[m]["step_idx"] = 0
                 mc_states[m]["cycle"] += 1
                 
-            # Eksekusi otomatis jika ada proses beraktor 'Machine'
+            # Otomatis eksekusi jika step selanjutnya beraktor 'Machine'
             while mc_states[m]["cycle"] < n_cycles:
                 next_idx = mc_states[m]["step_idx"]
                 next_step = steps[next_idx]
                 if next_step["Aktor"] == "Machine":
                     mc_states[m]["curr_act"] = next_step["Proses"]
+                    mc_states[m]["curr_actor"] = "Machine"
                     mc_states[m]["free_at"] = end_t + float(next_step["Cycle Time (s)"])
                     mc_states[m]["step_idx"] += 1
                     if mc_states[m]["step_idx"] >= num_steps:
@@ -158,11 +173,18 @@ def run_universal_mmc(df_input, n_mc, n_cycles):
             future_times = [mc_states[i]["free_at"] for i in range(1, n_mc + 1) if mc_states[i]["cycle"] < n_cycles and mc_states[i]["free_at"] > op_free_at]
             if future_times:
                 next_t = min(future_times)
+                mc_snapshot_idle = {}
+                for i in range(1, n_mc + 1):
+                    if mc_states[i]["free_at"] > op_free_at and mc_states[i]["curr_actor"] == "Machine":
+                        mc_snapshot_idle[i] = mc_states[i]["curr_act"]
+                    else:
+                        mc_snapshot_idle[i] = "waiting"
+                        
                 events.append({
                     "start": op_free_at,
                     "end": next_t,
                     "op_act": "idle",
-                    "mc_acts": {i: mc_states[i]["curr_act"] if mc_states[i]["free_at"] > op_free_at else "waiting" for i in range(1, n_mc + 1)}
+                    "mc_acts": mc_snapshot_idle
                 })
                 op_free_at = next_t
             else:
