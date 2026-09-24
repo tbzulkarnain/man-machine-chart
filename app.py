@@ -35,7 +35,7 @@ edited_df = st.data_editor(
 )
 
 # ==========================================
-# 2. SIMULATION ENGINE MMC (LOGIKA SEKUENSIAL)
+# 2. DYNAMIC MMC SIMULATION ENGINE
 # ==========================================
 
 def run_universal_mmc(df_input, n_mc, n_cycles):
@@ -44,102 +44,77 @@ def run_universal_mmc(df_input, n_mc, n_cycles):
         return pd.DataFrame()
 
     steps = df_clean.to_dict('records')
-    
-    # Kelompokkan elemen kerja berdasarkan Aktor
-    prep_steps = [s for s in steps if s["Aktor"] == "Man"]         # Contoh: Placing, Take Result
-    load_steps = [s for s in steps if s["Aktor"] == "Both"]        # Contoh: Loading-Unloading
-    machine_steps = [s for s in steps if s["Aktor"] == "Machine"]  # Contoh: Stitch / Hot Press
-    
-    # Identifikasi Placing (persiapan awal) dan Take Result (pengambilan hasil)
-    placing_step = prep_steps[0] if prep_steps else None
-    take_result_step = prep_steps[1] if len(prep_steps) > 1 else None
-    loading_step = load_steps[0] if load_steps else None
-    mc_step = machine_steps[0] if machine_steps else None
-
     op_free_at = 0.0
-    mc_states = {m: {"free_at": 0.0, "is_running": False, "curr_act": "waiting"} for m in range(1, n_mc + 1)}
+    
+    # Track status tiap mesin
+    mc_states = {m: {"free_at": 0.0, "is_running": False, "curr_act": "waiting", "cycle": 0} for m in range(1, n_mc + 1)}
     
     events = []
 
-    def get_mc_snapshot(active_mc, active_act, current_time):
+    def get_mc_snapshot(active_mc, active_act, current_t):
         snapshot = {}
         for i in range(1, n_mc + 1):
             if i == active_mc and active_act:
                 snapshot[i] = active_act
-            elif mc_states[i]["is_running"] and mc_states[i]["free_at"] > current_time:
+            elif mc_states[i]["is_running"] and mc_states[i]["free_at"] > current_t:
                 snapshot[i] = mc_states[i]["curr_act"]
             else:
                 snapshot[i] = "waiting"
         return snapshot
 
-    # Iterasi berdasarkan Siklus Simulasi
-    for cycle in range(n_cycles):
+    # Eksekusi simulasi sekuensial berdasarkan urutan siklus dan mesin
+    for c in range(n_cycles):
         for m in range(1, n_mc + 1):
-            
-            # --- ELEMEN 1: TAKE RESULT (Siklus ke-2 dst/setelah mesin selesai) ---
-            if cycle > 0 and take_result_step:
-                dur = float(take_result_step["Cycle Time (s)"])
-                start_t = op_free_at
-                end_t = start_t + dur
+            for step in steps:
+                aktor = step["Aktor"]
+                dur = float(step["Cycle Time (s)"])
+                proses_name = step["Proses"]
                 
-                events.append({
-                    "start": start_t,
-                    "end": end_t,
-                    "op_act": f"{take_result_step['Proses']} MC {m}",
-                    "mc_acts": get_mc_snapshot(m, take_result_step["Proses"], start_t)
-                })
-                op_free_at = end_t
+                if aktor == "Man":
+                    start_t = op_free_at
+                    end_t = start_t + dur
+                    
+                    events.append({
+                        "start": start_t,
+                        "end": end_t,
+                        "op_act": f"{proses_name} MC {m}",
+                        "mc_acts": get_mc_snapshot(None, None, start_t)
+                    })
+                    op_free_at = end_t
+                    
+                elif aktor == "Both":
+                    # Cek apakah operator harus idle menunggu mesin selesai beroperasi
+                    if mc_states[m]["is_running"] and mc_states[m]["free_at"] > op_free_at:
+                        idle_start = op_free_at
+                        idle_end = mc_states[m]["free_at"]
+                        
+                        events.append({
+                            "start": idle_start,
+                            "end": idle_end,
+                            "op_act": "idle",
+                            "mc_acts": get_mc_snapshot(None, None, idle_start)
+                        })
+                        op_free_at = idle_end
+                        mc_states[m]["is_running"] = False
+                    
+                    start_t = op_free_at
+                    end_t = start_t + dur
+                    
+                    events.append({
+                        "start": start_t,
+                        "end": end_t,
+                        "op_act": f"{proses_name} MC {m}",
+                        "mc_acts": get_mc_snapshot(m, proses_name, start_t)
+                    })
+                    op_free_at = end_t
+                    
+                elif aktor == "Machine":
+                    # Picu proses mesin berjalan otomatis setelah elemen Both/Man selesai
+                    mc_states[m]["is_running"] = True
+                    mc_states[m]["curr_act"] = proses_name
+                    mc_states[m]["free_at"] = op_free_at + dur
 
-            # --- ELEMEN 2: PLACING COMPONENT ---
-            if placing_step:
-                dur = float(placing_step["Cycle Time (s)"])
-                start_t = op_free_at
-                end_t = start_t + dur
-                
-                events.append({
-                    "start": start_t,
-                    "end": end_t,
-                    "op_act": f"{placing_step['Proses']} MC {m}",
-                    "mc_acts": get_mc_snapshot(m, None, start_t)
-                })
-                op_free_at = end_t
-
-            # --- ELEMEN 3: IDLE OPERATOR (Jika Mesin Masih Jalan saat Operator Siap Loading) ---
-            if mc_states[m]["is_running"] and mc_states[m]["free_at"] > op_free_at:
-                idle_start = op_free_at
-                idle_end = mc_states[m]["free_at"]
-                
-                events.append({
-                    "start": idle_start,
-                    "end": idle_end,
-                    "op_act": "idle",
-                    "mc_acts": get_mc_snapshot(None, None, idle_start)
-                })
-                op_free_at = idle_end
-                mc_states[m]["is_running"] = False
-
-            # --- ELEMEN 4: LOADING - UNLOADING (Both Man & Machine) ---
-            if loading_step:
-                dur = float(loading_step["Cycle Time (s)"])
-                start_t = op_free_at
-                end_t = start_t + dur
-                
-                events.append({
-                    "start": start_t,
-                    "end": end_t,
-                    "op_act": f"{loading_step['Proses']} MC {m}",
-                    "mc_acts": get_mc_snapshot(m, loading_step["Proses"], start_t)
-                })
-                op_free_at = end_t
-
-            # --- ELEMEN 5: STITCH / HOT PRESS (Machine Process Auto Trigger) ---
-            if mc_step:
-                dur = float(mc_step["Cycle Time (s)"])
-                mc_states[m]["is_running"] = True
-                mc_states[m]["curr_act"] = mc_step["Proses"]
-                mc_states[m]["free_at"] = op_free_at + dur
-
-    # Formating Output DataFrame
+    # Merapikan tabel hasil simulasi
     rows = []
     for ev in events:
         dur = round(ev["end"] - ev["start"], 2)
@@ -156,7 +131,7 @@ def run_universal_mmc(df_input, n_mc, n_cycles):
     return pd.DataFrame(rows)
 
 # ==========================================
-# 3. SUMMARY MATRIX (STEADY STATE 1 LOOP)
+# 3. SUMMARY MATRIX
 # ==========================================
 
 def run_summary_matrix_steady_state(df_input, n_mc):
@@ -170,32 +145,33 @@ def run_summary_matrix_steady_state(df_input, n_mc):
     mc_work_per_mc = sum(float(s["Cycle Time (s)"]) for s in steps if s["Aktor"] in ["Machine", "Both"])
     op_manual_per_mc = sum(float(s["Cycle Time (s)"]) for s in steps if s["Aktor"] == "Man")
     
-    total_op_work_steady = op_work_per_mc * n_mc
+    total_op_work = op_work_per_mc * n_mc
     single_mc_cycle = mc_work_per_mc + op_manual_per_mc
-    steady_cycle_time = max(total_op_work_steady, single_mc_cycle)
-
-    op_idle_steady = max(0.0, steady_cycle_time - total_op_work_steady)
-    op_util_steady = (total_op_work_steady / steady_cycle_time * 100) if steady_cycle_time > 0 else 0
+    
+    # Menghitung cycle time aktual berdasar bottleneck
+    cycle_time = max(total_op_work, single_mc_cycle)
+    op_idle = max(0.0, cycle_time - total_op_work)
+    op_util = (total_op_work / cycle_time * 100) if cycle_time > 0 else 0
 
     summary_dict = {
         "Summary": ["Working time", "Idle time", "Total cycle time", "Utilization in percent"],
         "Man Power": [
-            f"{total_op_work_steady:.2f}",
-            f"{op_idle_steady:.2f}",
-            f"{steady_cycle_time:.2f}",
-            f"{round(op_util_steady)}%"
+            f"{total_op_work:.2f}",
+            f"{op_idle:.2f}",
+            f"{cycle_time:.2f}",
+            f"{round(op_util)}%"
         ]
     }
 
     for m in range(1, n_mc + 1):
-        mc_idle_steady = max(0.0, steady_cycle_time - single_mc_cycle)
-        mc_util_steady = (single_mc_cycle / steady_cycle_time * 100) if steady_cycle_time > 0 else 0
+        mc_idle = max(0.0, cycle_time - single_mc_cycle)
+        mc_util = (single_mc_cycle / cycle_time * 100) if cycle_time > 0 else 0
         
         summary_dict[f"MC {m}"] = [
             f"{single_mc_cycle:.2f}",
-            f"{mc_idle_steady:.2f}",
-            f"{steady_cycle_time:.2f}",
-            f"{round(mc_util_steady)}%"
+            f"{mc_idle:.2f}",
+            f"{cycle_time:.2f}",
+            f"{round(mc_util)}%"
         ]
 
     return pd.DataFrame(summary_dict)
@@ -213,7 +189,7 @@ else:
     st.warning("⚠️ Masukkan data proses pada tabel di atas untuk menampilkan hasil.")
 
 st.markdown("---")
-st.subheader("📊 Summary Performance Matrix (1 Loop Steady State)")
+st.subheader("📊 Summary Performance Matrix")
 
 sum_df = run_summary_matrix_steady_state(edited_df, num_machines)
 if not sum_df.empty:
