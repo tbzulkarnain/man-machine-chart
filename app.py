@@ -48,7 +48,6 @@ def run_universal_mmc(df_input, n_mc, n_cycles):
     
     op_free_at = 0.0
     
-    # State tracking tiap mesin
     mc_states = {}
     for m in range(1, n_mc + 1):
         mc_states[m] = {
@@ -68,7 +67,6 @@ def run_universal_mmc(df_input, n_mc, n_cycles):
         
         candidates = []
         
-        # Cari langkah berikutnya yang membutuhkan operator (Man atau Both)
         for m in range(1, n_mc + 1):
             if mc_states[m]["cycle"] >= n_cycles:
                 continue
@@ -93,7 +91,6 @@ def run_universal_mmc(df_input, n_mc, n_cycles):
                     "step": step
                 })
 
-        # EKSEKUSI CANDIDATE
         if candidates:
             candidates.sort(key=lambda x: (x["ready_time"], x["priority"], x["mc_id"]))
             chosen = candidates[0]
@@ -102,7 +99,6 @@ def run_universal_mmc(df_input, n_mc, n_cycles):
             step = chosen["step"]
             start_t = chosen["ready_time"]
             
-            # Record Operator Idle jika ada gap waktu
             if start_t > op_free_at:
                 mc_snapshot_idle = {}
                 for i in range(1, n_mc + 1):
@@ -120,7 +116,6 @@ def run_universal_mmc(df_input, n_mc, n_cycles):
             
             end_t = start_t + float(step["Cycle Time (s)"])
             
-            # Snapshot Status Mesin selama durasi langkah operator ini
             mc_acts_snapshot = {}
             for i in range(1, n_mc + 1):
                 if i == m:
@@ -150,13 +145,12 @@ def run_universal_mmc(df_input, n_mc, n_cycles):
             
             op_free_at = end_t
             
-            # Advance step index untuk operator
             mc_states[m]["step_idx"] += 1
             if mc_states[m]["step_idx"] >= num_steps:
                 mc_states[m]["step_idx"] = 0
                 mc_states[m]["cycle"] += 1
 
-            # --- PEMICU KUNCI MESIN (TRIGGER MACHINE) ---
+            # Trigger Mesin Otomatis (Stitch Process) Setelah Loading-Unloading
             curr_idx = mc_states[m]["step_idx"]
             if mc_states[m]["cycle"] < n_cycles:
                 if steps[curr_idx]["Aktor"] == "Machine":
@@ -170,7 +164,7 @@ def run_universal_mmc(df_input, n_mc, n_cycles):
                         mc_states[m]["step_idx"] = 0
                         mc_states[m]["cycle"] += 1
                 elif step["Aktor"] == "Both":
-                    for s_i, s_val in enumerate(steps):
+                    for s_val in steps:
                         if s_val["Aktor"] == "Machine":
                             mc_states[m]["curr_act"] = s_val["Proses"]
                             mc_states[m]["is_running"] = True
@@ -213,41 +207,61 @@ def run_universal_mmc(df_input, n_mc, n_cycles):
         
     return pd.DataFrame(rows)
 
+# ==========================================
+# 3. SUMMARY MATRIX (STEADY STATE 1 LOOP)
+# ==========================================
 
-def run_summary_matrix(df_input, n_mc):
+def run_summary_matrix_steady_state(df_input, n_mc):
     df_clean = df_input.dropna(subset=["Proses", "Cycle Time (s)", "Aktor"]).copy()
     if df_clean.empty:
         return pd.DataFrame()
 
     steps = df_clean.to_dict('records')
     
-    # PERBAIKAN TYPO DI SINI
-    man_time = sum(float(s["Cycle Time (s)"]) for s in steps if s["Aktor"] in ["Man", "Both"])
-    mc_time = sum(float(s["Cycle Time (s)"]) for s in steps if s["Aktor"] in ["Machine", "Both"])
+    # Perhitungan Durasi per Mesin
+    op_work_per_mc = sum(float(s["Cycle Time (s)"]) for s in steps if s["Aktor"] in ["Man", "Both"])
+    mc_work_per_mc = sum(float(s["Cycle Time (s)"]) for s in steps if s["Aktor"] in ["Machine", "Both"])
+    op_manual_per_mc = sum(float(s["Cycle Time (s)"]) for s in steps if s["Aktor"] == "Man")
     
-    total_op_work = man_time * n_mc
-    single_mc_work = mc_time + sum(float(s["Cycle Time (s)"]) for s in steps if s["Aktor"] == "Man")
+    # Total Waktu Kerja Operator Dalam 1 Loop Steady State
+    total_op_work_steady = op_work_per_mc * n_mc
     
-    total_cycle = max(single_mc_work, total_op_work)
+    # Cycle Time 1 Mesin (Waktu Mesin + Waktu Manual Operator untuk Mesin Tersebut)
+    single_mc_cycle = mc_work_per_mc + op_manual_per_mc
     
-    op_idle = max(0.0, total_cycle - total_op_work)
-    op_util = (total_op_work / total_cycle) * 100 if total_cycle > 0 else 0.0
-    
-    mc_idle = max(0.0, total_cycle - single_mc_work)
-    mc_util = (single_mc_work / total_cycle) * 100 if total_cycle > 0 else 0.0
-    
+    # Bottleneck Cycle Time 1 Loop Steady State
+    steady_cycle_time = max(total_op_work_steady, single_mc_cycle)
+
+    # 1. Man Power Performance
+    op_idle_steady = max(0.0, steady_cycle_time - total_op_work_steady)
+    op_util_steady = (total_op_work_steady / steady_cycle_time * 100) if steady_cycle_time > 0 else 0
+
     summary_dict = {
         "Summary": ["Working time", "Idle time", "Total cycle time", "Utilization in percent"],
-        "Man Power": [f"{total_op_work:.2f}", f"{op_idle:.2f}", f"{total_cycle:.2f}", f"{op_util:.0f}%"]
+        "Man Power": [
+            f"{total_op_work_steady:.2f}",
+            f"{op_idle_steady:.2f}",
+            f"{steady_cycle_time:.2f}",
+            f"{round(op_util_steady)}%"
+        ]
     }
-    
-    for i in range(1, n_mc + 1):
-        summary_dict[f"MC {i}"] = [f"{single_mc_work:.2f}", f"{mc_idle:.2f}", f"{total_cycle:.2f}", f"{mc_util:.0f}%"]
+
+    # 2. Machine Performance
+    for m in range(1, n_mc + 1):
+        mc_idle_steady = max(0.0, steady_cycle_time - single_mc_cycle)
+        mc_util_steady = (single_mc_cycle / steady_cycle_time * 100) if steady_cycle_time > 0 else 0
         
+        summary_dict[f"MC {m}"] = [
+            f"{single_mc_cycle:.2f}",
+            f"{mc_idle_steady:.2f}",
+            f"{steady_cycle_time:.2f}",
+            f"{round(mc_util_steady)}%"
+        ]
+
     return pd.DataFrame(summary_dict)
 
 # ==========================================
-# 3. RENDER HASIL
+# 4. RENDER HALAMAN STREAMLIT
 # ==========================================
 st.markdown("---")
 st.subheader("2. Hasil Simulasi Man-Machine Chart (MMC)")
@@ -261,6 +275,6 @@ else:
 st.markdown("---")
 st.subheader("📊 Summary Performance Matrix (1 Loop Steady State)")
 
-sum_df = run_summary_matrix(edited_df, num_machines)
+sum_df = run_summary_matrix_steady_state(edited_df, num_machines)
 if not sum_df.empty:
     st.dataframe(sum_df, use_container_width=True, hide_index=True)
