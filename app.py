@@ -1,5 +1,114 @@
+import streamlit as st
+import pandas as pd
+import io
+import json
+import urllib.request
+
 # ==========================================
-# 5. FIXED SIMULATION ENGINE (NO EMPTY SCREEN)
+# 1. PAGE CONFIGURATION & STYLING
+# ==========================================
+st.set_page_config(
+    page_title="Footwear Line MMC Simulator",
+    page_icon="👞",
+    layout="wide"
+)
+
+# Custom CSS for polished LinkedIn portfolio look
+st.markdown("""
+    <style>
+    .main-title {
+        font-size: 32px;
+        font-weight: bold;
+        color: #1E3A8A;
+        margin-bottom: 5px;
+    }
+    .sub-title {
+        font-size: 16px;
+        color: #4B5563;
+        margin-bottom: 25px;
+    }
+    .guide-box {
+        background-color: #F0F9FF;
+        border-left: 5px solid #0284C7;
+        padding: 15px;
+        border-radius: 5px;
+        margin-bottom: 25px;
+    }
+    .footer-text {
+        text-align: center;
+        color: #6B7280;
+        font-size: 13px;
+        padding-top: 20px;
+        padding-bottom: 10px;
+    }
+    </style>
+""", unsafe_allow_html=True)
+
+# ==========================================
+# 2. VISITOR COUNTER ENGINE
+# ==========================================
+def get_global_visitor_count():
+    try:
+        url = "https://api.counterapi.dev/v1/footwear-mmc-simulator-tz/visits/up"
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req, timeout=3) as response:
+            data = json.loads(response.read().decode())
+            return data.get('count', '1+')
+    except Exception:
+        return "1+"
+
+# ==========================================
+# 3. HEADER & USER GUIDE
+# ==========================================
+st.markdown('<div class="main-title">👞 Footwear Manufacturing: Man-Machine Chart (MMC) Simulator</div>', unsafe_allow_html=True)
+st.markdown('<div class="sub-title">Industrial Engineering Tool for Multi-Machine Workstation Optimization & Idle Time Analysis</div>', unsafe_allow_html=True)
+
+with st.container():
+    st.markdown("""
+    <div class="guide-box">
+        <h4>📌 Quick User Guide</h4>
+        <ol>
+            <li><b>Configure Simulation Parameters:</b> Set the number of active machines and simulation cycles on the control panel below.</li>
+            <li><b>Set Process Sequence:</b> Edit the cycle times, process steps, and actor assignment in the table (Default data represents Shoe Upper Stitching Process).</li>
+            <li><b>Analyze Dynamic MMC Output:</b> Review the step-by-step Gantt simulation timeline to spot operator idle times and machine bottlenecks.</li>
+            <li><b>Download Excel Report:</b> Click the <b>Download MMC Result (Excel)</b> button to export the simulation data for further engineering analysis.</li>
+        </ol>
+    </div>
+    """, unsafe_allow_html=True)
+
+# ==========================================
+# 4. CONTROL PANEL & PROCESS INPUT TABLE
+# ==========================================
+st.subheader("⚙️ 1. Workstation & Process Configuration")
+
+col1, col2 = st.columns(2)
+with col1:
+    num_machines = st.number_input("Number of Machines (Workstations)", min_value=1, max_value=10, value=2, step=1)
+with col2:
+    num_cycles = st.number_input("Simulation Cycles", min_value=1, max_value=10, value=2, step=1)
+
+# Reset & auto-heal session_state jika terjadi bentrok nama kolom
+if "table_data" not in st.session_state or "Process Step" not in st.session_state.table_data.columns:
+    st.session_state.table_data = pd.DataFrame([
+        {"Process Step": "Placing upper component to pallet", "Cycle Time (s)": 15.02, "Actor": "Man"},
+        {"Process Step": "Loading & Unloading Shoe Upper", "Cycle Time (s)": 4.48, "Actor": "Both"},
+        {"Process Step": "Take finished upper & inspect", "Cycle Time (s)": 2.47, "Actor": "Man"},
+        {"Process Step": "Automatic Upper Stitching", "Cycle Time (s)": 51.72, "Actor": "Machine"}
+    ])
+
+edited_df = st.data_editor(
+    st.session_state.table_data,
+    num_rows="dynamic",
+    column_config={
+        "Process Step": st.column_config.TextColumn("Process Element Name", required=True),
+        "Cycle Time (s)": st.column_config.NumberColumn("Cycle Time (sec)", min_value=0.01, format="%.2f", required=True),
+        "Actor": st.column_config.SelectboxColumn("Assigned Actor", options=["Man", "Machine", "Both"], required=True),
+    },
+    use_container_width=True
+)
+
+# ==========================================
+# 5. SIMULATION ENGINE
 # ==========================================
 
 def run_universal_mmc(df_input, n_mc, n_cycles):
@@ -10,9 +119,9 @@ def run_universal_mmc(df_input, n_mc, n_cycles):
     steps = df_clean.to_dict('records')
     op_free_at = 0.0
     
-    # Ambil durasi & nama proses mesin jika ada
+    # Ambil durasi & nama proses mesin
     mc_dur = 0.0
-    mc_step_name = "Machine Stitching"
+    mc_step_name = "Automatic Upper Stitching"
     for s in steps:
         if s["Actor"] == "Machine":
             mc_dur = float(s["Cycle Time (s)"])
@@ -53,7 +162,7 @@ def run_universal_mmc(df_input, n_mc, n_cycles):
                     op_free_at = end_t
                     
                 elif actor == "Both":
-                    # Cek apakah operator harus tunggu mesin selesai jalan
+                    # Cek jika operator harus tunggu mesin selesai
                     if mc_states[m]["is_running"] and mc_states[m]["free_at"] > op_free_at:
                         idle_start = op_free_at
                         idle_end = mc_states[m]["free_at"]
@@ -78,14 +187,14 @@ def run_universal_mmc(df_input, n_mc, n_cycles):
                     })
                     op_free_at = end_t
 
-                    # Mesin LANGSUNG JALAN tepat setelah Loading & Unloading selesai!
+                    # Mesin LANGSUNG JALAN tepat setelah Loading & Unloading!
                     if mc_dur > 0:
                         mc_states[m]["is_running"] = True
                         mc_states[m]["curr_act"] = mc_step_name
                         mc_states[m]["free_at"] = op_free_at + mc_dur
 
                 elif actor == "Machine":
-                    # Jika proses mesin berdiri sendiri (tanpa pemicu Both)
+                    # Menangani jika proses mesin berdiri sendiri
                     if not mc_states[m]["is_running"]:
                         mc_states[m]["is_running"] = True
                         mc_states[m]["curr_act"] = process_name
@@ -107,7 +216,60 @@ def run_universal_mmc(df_input, n_mc, n_cycles):
     return pd.DataFrame(rows)
 
 # ==========================================
-# 6. RENDERING TABEL & OUTPUT
+# 6. SUMMARY PERFORMANCE MATRIX
+# ==========================================
+
+def run_summary_matrix_steady_state(df_input, n_mc):
+    df_clean = df_input.dropna(subset=["Process Step", "Cycle Time (s)", "Actor"]).copy()
+    if df_clean.empty:
+        return pd.DataFrame()
+
+    steps = df_clean.to_dict('records')
+    
+    op_work_per_mc = sum(float(s["Cycle Time (s)"]) for s in steps if s["Actor"] in ["Man", "Both"])
+    mc_work_per_mc = sum(float(s["Cycle Time (s)"]) for s in steps if s["Actor"] in ["Machine", "Both"])
+    op_manual_per_mc = sum(float(s["Cycle Time (s)"]) for s in steps if s["Actor"] == "Man")
+    
+    total_op_work = op_work_per_mc * n_mc
+    single_mc_cycle = mc_work_per_mc + op_manual_per_mc
+    
+    cycle_time = max(total_op_work, single_mc_cycle)
+    op_idle = max(0.0, cycle_time - total_op_work)
+    op_util = (total_op_work / cycle_time * 100) if cycle_time > 0 else 0
+
+    summary_dict = {
+        "Performance Metric": ["Working Time (s)", "Idle Time (s)", "Total Cycle Time (s)", "Utilization (%)"],
+        "Operator / Manpower": [
+            f"{total_op_work:.2f}",
+            f"{op_idle:.2f}",
+            f"{cycle_time:.2f}",
+            f"{round(op_util, 1)}%"
+        ]
+    }
+
+    for m in range(1, n_mc + 1):
+        mc_idle = max(0.0, cycle_time - single_mc_cycle)
+        mc_util = (single_mc_cycle / cycle_time * 100) if cycle_time > 0 else 0
+        
+        summary_dict[f"Machine {m}"] = [
+            f"{single_mc_cycle:.2f}",
+            f"{mc_idle:.2f}",
+            f"{cycle_time:.2f}",
+            f"{round(mc_util, 1)}%"
+        ]
+
+    return pd.DataFrame(summary_dict)
+
+# Helper function untuk konversi DataFrame ke Excel Binary
+def convert_df_to_excel(df_timeline, df_summary):
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        df_timeline.to_excel(writer, sheet_name='MMC Timeline', index=False)
+        df_summary.to_excel(writer, sheet_name='Performance Summary', index=False)
+    return output.getvalue()
+
+# ==========================================
+# 7. RENDER OUTPUT & VISUALS
 # ==========================================
 st.markdown("---")
 st.subheader("📊 2. Dynamic Man-Machine Simulation Timeline")
@@ -144,3 +306,13 @@ if res_df is not None and not res_df.empty:
         )
 else:
     st.error("⚠️ Tabel simulasi kosong. Pastikan data pada 'Workstation & Process Configuration' sudah terisi lengkap.")
+
+# ==========================================
+# 8. FOOTER WITH SUBTLE VISITOR COUNTER
+# ==========================================
+st.markdown("---")
+visitor_count = get_global_visitor_count()
+st.markdown(
+    f'<div class="footer-text">Footwear Man-Machine Chart Simulator | Industrial Engineering Portfolio | 👁️ Total Visitors: <b>{visitor_count}</b></div>', 
+    unsafe_allow_html=True
+)
