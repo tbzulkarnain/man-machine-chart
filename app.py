@@ -19,7 +19,7 @@ if "table_data" not in st.session_state:
     st.session_state.table_data = pd.DataFrame([
         {"Proses": "Placing component to pallet", "Cycle Time (s)": 15.02, "Aktor": "Man"},
         {"Proses": "Loading - Unloading", "Cycle Time (s)": 4.48, "Aktor": "Both"},
-        {"Proses": "St Process", "Cycle Time (s)": 51.72, "Aktor": "Machine"},
+        {"Proses": "Stitch Process", "Cycle Time (s)": 51.72, "Aktor": "Machine"},
         {"Proses": "take result", "Cycle Time (s)": 2.47, "Aktor": "Man"}
     ])
 
@@ -48,7 +48,6 @@ def run_universal_mmc(df_input, n_mc, n_cycles):
     
     op_free_at = 0.0
     
-    # Inisialisasi state tiap mesin
     mc_states = {}
     for m in range(1, n_mc + 1):
         mc_states[m] = {
@@ -65,7 +64,6 @@ def run_universal_mmc(df_input, n_mc, n_cycles):
     while any(mc_states[m]["cycle"] < n_cycles for m in range(1, n_mc + 1)) and step_count < max_steps:
         step_count += 1
         
-        # Cari mesin yang membutuhkan interaksi Operator (Aktor Man / Both)
         candidates = []
         for m in range(1, n_mc + 1):
             if mc_states[m]["cycle"] >= n_cycles:
@@ -76,8 +74,6 @@ def run_universal_mmc(df_input, n_mc, n_cycles):
             
             if step["Aktor"] in ["Man", "Both"]:
                 ready_t = max(op_free_at, mc_states[m]["free_at"])
-                
-                # Bobot prioritas: utamakan mesin yang sudah selesai running mesin duluan (Loading-Unloading/Take Result)
                 priority = 0 if idx > 0 else 1 
                 
                 candidates.append({
@@ -89,7 +85,6 @@ def run_universal_mmc(df_input, n_mc, n_cycles):
                 })
         
         if candidates:
-            # Urutkan kandidat berdasarkan: 1. Waktu Siap, 2. Prioritas Proses, 3. ID Mesin
             candidates.sort(key=lambda x: (x["ready_time"], x["priority"], x["mc_id"]))
             chosen = candidates[0]
             
@@ -97,7 +92,7 @@ def run_universal_mmc(df_input, n_mc, n_cycles):
             step = chosen["step"]
             start_t = chosen["ready_time"]
             
-            # Jika operator menganggur (idle) sebelum instruksi ini
+            # Catat idle operator jika menganggur
             if start_t > op_free_at:
                 events.append({
                     "start": op_free_at,
@@ -108,15 +103,18 @@ def run_universal_mmc(df_input, n_mc, n_cycles):
             
             end_t = start_t + float(step["Cycle Time (s)"])
             
-            # Catat snapshot status semua mesin pada rentang waktu ini
+            # Snapshot status mesin:
+            # Mesin HANYA mencatat aktivitas jika Aktor = Both. Jika Man, mesin diset ke 'waiting'
             mc_acts_snapshot = {}
             for i in range(1, n_mc + 1):
                 if i == m:
-                    mc_acts_snapshot[i] = step["Proses"]
+                    if step["Aktor"] == "Both":
+                        mc_acts_snapshot[i] = step["Proses"]
+                    else:
+                        mc_acts_snapshot[i] = "waiting"
                 else:
                     mc_acts_snapshot[i] = mc_states[i]["curr_act"] if mc_states[i]["free_at"] > start_t else "waiting"
             
-            # Format label aktivitas operator
             op_label = step['Proses']
             if n_mc > 1 and "MC" not in op_label:
                 op_label = f"{step['Proses']} MC {m}"
@@ -128,10 +126,14 @@ def run_universal_mmc(df_input, n_mc, n_cycles):
                 "mc_acts": mc_acts_snapshot
             })
             
-            # Update state operator dan mesin
             op_free_at = end_t
-            mc_states[m]["free_at"] = end_t
-            mc_states[m]["curr_act"] = step["Proses"]
+            
+            if step["Aktor"] == "Both":
+                mc_states[m]["free_at"] = end_t
+                mc_states[m]["curr_act"] = step["Proses"]
+            else:
+                if mc_states[m]["free_at"] <= start_t:
+                    mc_states[m]["curr_act"] = "waiting"
             
             # Lanjut ke step berikutnya
             mc_states[m]["step_idx"] += 1
@@ -139,7 +141,7 @@ def run_universal_mmc(df_input, n_mc, n_cycles):
                 mc_states[m]["step_idx"] = 0
                 mc_states[m]["cycle"] += 1
                 
-            # Otomatis jalankan elemen beruntun beraktor 'Machine' jika ada
+            # Eksekusi otomatis jika ada proses beraktor 'Machine'
             while mc_states[m]["cycle"] < n_cycles:
                 next_idx = mc_states[m]["step_idx"]
                 next_step = steps[next_idx]
@@ -153,7 +155,6 @@ def run_universal_mmc(df_input, n_mc, n_cycles):
                 else:
                     break
         else:
-            # Jika tidak ada operator yang bisa kerja, majukan waktu op_free_at ke event mesin berikutnya
             future_times = [mc_states[i]["free_at"] for i in range(1, n_mc + 1) if mc_states[i]["cycle"] < n_cycles and mc_states[i]["free_at"] > op_free_at]
             if future_times:
                 next_t = min(future_times)
@@ -167,7 +168,6 @@ def run_universal_mmc(df_input, n_mc, n_cycles):
             else:
                 break
 
-    # Format hasil simulasi ke DataFrame
     rows = []
     for ev in events:
         dur = round(ev["end"] - ev["start"], 2)
