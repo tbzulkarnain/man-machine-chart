@@ -1,147 +1,106 @@
 import streamlit as st
 import pandas as pd
 import openpyxl
-from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
+from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 import io
 
-st.set_page_config(page_title="Queue Engine MMC Generator", layout="wide")
-
-st.title("⚙️ Man-Machine Chart (MMC) Generator - Queue Engine")
-st.caption("Prinsip Utama: Operator Tidak Idle Selama Ada Mesin Siap Dikerjakan")
-
-# =============================================================================
-# 1. INPUT PARAMETER
-# =============================================================================
-st.sidebar.header("⚙️ Konfigurasi Mesin & Simulasi")
-num_machines = st.sidebar.number_input("Jumlah Mesin (N):", min_value=1, max_value=5, value=2, step=1)
-num_cycles = st.sidebar.slider("Jumlah Siklus Simulasi:", min_value=1, max_value=5, value=2)
-
-st.subheader("📝 Master Elemen Proses")
-default_data = [
-    {"Seq": 1, "Process": "Placing & Loading component", "Duration": 80.0, "Actor": "Both"},
-    {"Seq": 2, "Process": "Hot Press MC", "Duration": 60.0, "Actor": "Machine"},
-    {"Seq": 3, "Process": "Unloading / Take result", "Duration": 6.0, "Actor": "Both"},
-]
-
-edited_df = st.data_editor(
-    pd.DataFrame(default_data),
-    num_rows="dynamic",
-    column_config={
-        "Seq": st.column_config.NumberColumn("No", width="small"),
-        "Process": st.column_config.TextColumn("Nama Proses / Activity", width="large"),
-        "Duration": st.column_config.NumberColumn("Waktu (s)", min_value=0.0, format="%.2f"),
-        "Actor": st.column_config.SelectboxColumn("Aktor", options=["Man", "Both", "Machine"]),
-    },
-    hide_index=True,
-    use_container_width=True
-)
-
-valid_rows = edited_df[(edited_df["Process"].astype(str).str.strip() != "") & (edited_df["Duration"] > 0)].sort_values(by="Seq").to_dict("records")
-
-# =============================================================================
-# 2. DYNAMIC QUEUE SIMULATION ENGINE
-# =============================================================================
-if valid_rows:
-    load_elem = next((r for r in valid_rows if r["Actor"] == "Both" and "load" in r["Process"].lower()), None)
-    mc_elem = next((r for r in valid_rows if r["Actor"] == "Machine"), None)
-    unload_elem = next((r for r in valid_rows if r["Actor"] == "Both" and ("unload" in r["Process"].lower() or "take" in r["Process"].lower())), None)
-
-    load_dur = load_elem["Duration"] if load_elem else 10.0
-    load_name = load_elem["Process"] if load_elem else "Loading"
+# ==========================================
+# 1. LOGIKA SIMULASI MMC UNIVERSAL
+# ==========================================
+def run_universal_mmc_simulation(user_elements, num_machines, num_cycles):
+    prep_elems = []
+    mc_elems = []
+    post_elems = []
     
-    mc_dur = mc_elem["Duration"] if mc_elem else 60.0
-    mc_name = mc_elem["Process"] if mc_elem else "Machine Running"
-    
-    unload_dur = unload_elem["Duration"] if unload_elem else 5.0
-    unload_name = unload_elem["Process"] if unload_elem else "Unloading"
+    current_phase = "PREP"
+    for el in user_elements:
+        actor = el["Aktor"]
+        if actor == "Machine":
+            mc_elems.append(el)
+            current_phase = "POST"
+        elif current_phase == "PREP":
+            prep_elems.append(el)
+        else:
+            post_elems.append(el)
+            
+    mc_total_dur = sum(float(el["Cycle Time (s)"]) for el in mc_elems)
+    mc_main_name = " + ".join([str(el["Proses"]) for el in mc_elems]) if mc_elems else "Machine Process"
 
-    mc_status = {m: 'EMPTY' for m in range(1, num_machines + 1)}
+    mc_state = {m: 'READY_TO_LOAD' for m in range(1, num_machines + 1)}
     mc_finish_time = {m: 0.0 for m in range(1, num_machines + 1)}
-    mc_cycle_count = {m: 0 for m in range(1, num_machines + 1)}
+    mc_cycles_done = {m: 0 for m in range(1, num_machines + 1)}
 
     current_time = 0.0
     raw_events = []
 
-    while min(mc_cycle_count.values()) < num_cycles:
+    while min(mc_cycles_done.values()) < num_cycles:
+        # Update status mesin berdasarkan waktu saat ini
         for m in range(1, num_machines + 1):
-            if mc_status[m] == 'RUNNING' and current_time >= mc_finish_time[m]:
-                mc_status[m] = 'DONE'
+            if mc_state[m] == 'RUNNING' and current_time >= mc_finish_time[m]:
+                mc_state[m] = 'READY_TO_UNLOAD'
 
-        target_mc = None
-        action_type = None
-
-        # Prioritas 1: Unload mesin yang sudah selesai running
+        # Prioritas 1: Unload mesin yang sudah matang/selesai
+        unload_mc = None
         for m in range(1, num_machines + 1):
-            if mc_status[m] == 'DONE' and mc_cycle_count[m] < num_cycles:
-                target_mc = m
-                action_type = 'UNLOAD'
+            if mc_state[m] == 'READY_TO_UNLOAD' and mc_cycles_done[m] < num_cycles:
+                unload_mc = m
                 break
 
-        # Prioritas 2: Load mesin yang kosong
-        if target_mc is None:
-            for m in range(1, num_machines + 1):
-                if mc_status[m] == 'EMPTY' and mc_cycle_count[m] < num_cycles:
-                    target_mc = m
-                    action_type = 'LOAD'
-                    break
-
-        # Prioritas 3: Jika tidak ada mesin siap, Operator IDLE sampai ada mesin selesai
-        if target_mc is None:
-            running_mcs = [m for m in range(1, num_machines + 1) if mc_status[m] == 'RUNNING' and mc_cycle_count[m] < num_cycles]
-            if not running_mcs:
-                break
+        if unload_mc is not None:
+            for el in post_elems:
+                dur = float(el["Cycle Time (s)"])
+                act_name = f"{el['Proses']} MC {unload_mc}" if num_machines > 1 else str(el['Proses'])
+                raw_events.append({"start": current_time, "end": current_time + dur, "owner": "Op", "id": 0, "name": act_name})
+                if el["Aktor"] == "Both":
+                    raw_events.append({"start": current_time, "end": current_time + dur, "owner": "MC", "id": unload_mc, "name": str(el['Proses'])})
+                current_time += dur
             
-            next_finish = min(mc_finish_time[m] for m in running_mcs)
-            idle_dur = round(next_finish - current_time, 2)
-            
-            if idle_dur > 0:
-                raw_events.append({
-                    "start": current_time, "end": next_finish, "dur": idle_dur,
-                    "owner": "Op", "id": 0, "name": "idle"
-                })
-                current_time = next_finish
-
-            for m in range(1, num_machines + 1):
-                if mc_status[m] == 'RUNNING' and current_time >= mc_finish_time[m]:
-                    mc_status[m] = 'DONE'
+            mc_state[unload_mc] = 'READY_TO_LOAD'
+            mc_cycles_done[unload_mc] += 1
             continue
 
-        # Eksekusi Aktivitas Operator & Mesin
-        if action_type == 'UNLOAD':
-            raw_events.append({
-                "start": current_time, "end": current_time + unload_dur, "dur": unload_dur,
-                "owner": "Op", "id": 0, "name": f"{unload_name} MC {target_mc}" if num_machines > 1 else unload_name
-            })
-            raw_events.append({
-                "start": current_time, "end": current_time + unload_dur, "dur": unload_dur,
-                "owner": "MC", "id": target_mc, "name": unload_name
-            })
-            current_time += unload_dur
-            mc_status[target_mc] = 'EMPTY'
-            mc_cycle_count[target_mc] += 1
+        # Prioritas 2: Load mesin yang kosong
+        load_mc = None
+        for m in range(1, num_machines + 1):
+            if mc_state[m] == 'READY_TO_LOAD' and mc_cycles_done[m] < num_cycles:
+                load_mc = m
+                break
 
-        elif action_type == 'LOAD':
-            raw_events.append({
-                "start": current_time, "end": current_time + load_dur, "dur": load_dur,
-                "owner": "Op", "id": 0, "name": f"{load_name} MC {target_mc}" if num_machines > 1 else load_name
-            })
-            raw_events.append({
-                "start": current_time, "end": current_time + load_dur, "dur": load_dur,
-                "owner": "MC", "id": target_mc, "name": load_name
-            })
-            current_time += load_dur
-            
-            mc_status[target_mc] = 'RUNNING'
-            mc_finish_time[target_mc] = current_time + mc_dur
-            raw_events.append({
-                "start": current_time, "end": current_time + mc_dur, "dur": mc_dur,
-                "owner": "MC", "id": target_mc, "name": mc_name
-            })
+        if load_mc is not None:
+            for el in prep_elems:
+                dur = float(el["Cycle Time (s)"])
+                act_name = f"{el['Proses']} MC {load_mc}" if num_machines > 1 else str(el['Proses'])
+                raw_events.append({"start": current_time, "end": current_time + dur, "owner": "Op", "id": 0, "name": act_name})
+                if el["Aktor"] == "Both":
+                    raw_events.append({"start": current_time, "end": current_time + dur, "owner": "MC", "id": load_mc, "name": str(el['Proses'])})
+                current_time += dur
 
-    # =============================================================================
-    # 3. MENGUBAH KE GRID TIME SLICE (DISCRETE INTERVALS)
-    # =============================================================================
+            if mc_elems:
+                mc_state[load_mc] = 'RUNNING'
+                mc_finish_time[load_mc] = current_time + mc_total_dur
+                raw_events.append({"start": current_time, "end": current_time + mc_total_dur, "owner": "MC", "id": load_mc, "name": mc_main_name})
+            else:
+                mc_cycles_done[load_mc] += 1
+            continue
+
+        # Prioritas 3: Operator Idle (Menunggu semua mesin running)
+        running_mcs = [m for m in range(1, num_machines + 1) if mc_state[m] == 'RUNNING' and mc_cycles_done[m] < num_cycles]
+        if not running_mcs:
+            break
+
+        next_finish = min(mc_finish_time[m] for m in running_mcs)
+        idle_dur = round(next_finish - current_time, 2)
+
+        if idle_dur > 0:
+            raw_events.append({"start": current_time, "end": next_finish, "owner": "Op", "id": 0, "name": "idle"})
+            current_time = next_finish
+
+        for m in range(1, num_machines + 1):
+            if mc_state[m] == 'RUNNING' and current_time >= mc_finish_time[m]:
+                mc_state[m] = 'READY_TO_UNLOAD'
+
+    # Diskretisasi kisi waktu
     time_points = set([0.0])
     for act in raw_events:
         time_points.add(round(act["start"], 2))
@@ -180,80 +139,179 @@ if valid_rows:
 
         grid_rows.append(row_item)
 
-    # Preview Dataframe
-    st.markdown("---")
-    st.subheader("📋 Output Tabel Discrete Time Grid")
+    return grid_rows
+
+# ==========================================
+# 2. EXPORT EXCEL RAPI BERSATU SAMA STYLE
+# ==========================================
+def export_mmc_to_excel(grid_data, num_machines):
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Man-Machine Chart"
+    ws.views.sheetView[0].showGridLines = True
+
+    header_fill = PatternFill(start_color="1F4E79", end_color="1F4E79", fill_type="solid")
+    sub_header_fill = PatternFill(start_color="2F5597", end_color="2F5597", fill_type="solid")
+    idle_fill = PatternFill(start_color="F2F2F2", end_color="F2F2F2", fill_type="solid")
+    text_white = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
+    text_bold = Font(name="Calibri", size=11, bold=True)
+    text_regular = Font(name="Calibri", size=11)
     
-    table_preview = []
-    for r in grid_rows:
-        row_dict = {
-            "Time (s)": r["cum_time"],
-            "Operator Process": r["op_act"],
-            "Time (s) Op": r["op_dur"]
-        }
-        for m in range(1, num_machines + 1):
-            row_dict[f"MC {m}"] = r["mc_data"][m]["act"]
-            row_dict[f"Time (s) MC{m}"] = r["mc_data"][m]["dur"]
-        table_preview.append(row_dict)
-
-    st.dataframe(pd.DataFrame(table_preview), use_container_width=True)
-
-    # Export Excel Generator
-    def generate_exact_excel():
-        wb = openpyxl.Workbook()
-        ws = wb.active
-        ws.title = "MMC Output"
-        ws.views.sheetView[0].showGridLines = True
-
-        header_fill = PatternFill(start_color="9BC2E6", end_color="9BC2E6", fill_type="solid")
-        idle_fill = PatternFill(start_color="D9D9D9", end_color="D9D9D9", fill_type="solid")
-        bold_font = Font(name="Calibri", size=10, bold=True)
-        regular_font = Font(name="Calibri", size=10)
-        thin_border = Border(
-            left=Side(style='thin', color='000000'), right=Side(style='thin', color='000000'),
-            top=Side(style='thin', color='000000'), bottom=Side(style='thin', color='000000')
-        )
-
-        headers = ["Time (s)", "Process Operator 1", "Time Second"]
-        for m in range(1, num_machines + 1):
-            headers.extend([f"MC {m}", "Time Second"])
-
-        ws.append(headers)
-        for col_i in range(1, len(headers) + 1):
-            cell = ws.cell(row=1, column=col_i)
-            cell.fill = header_fill
-            cell.font = bold_font
-            cell.alignment = Alignment(horizontal="center", vertical="center")
-            cell.border = thin_border
-
-        for r in grid_rows:
-            r_vals = [r["cum_time"], r["op_act"], r["op_dur"]]
-            for m in range(1, num_machines + 1):
-                r_vals.extend([r["mc_data"][m]["act"], r["mc_data"][m]["dur"]])
-            ws.append(r_vals)
-
-        for row in range(2, ws.max_row + 1):
-            for col in range(1, ws.max_column + 1):
-                cell = ws.cell(row=row, column=col)
-                cell.font = regular_font
-                cell.border = thin_border
-                cell.alignment = Alignment(horizontal="center" if col != 2 else "left", vertical="center")
-                
-                if str(cell.value).lower() in ["idle", "waiting"]:
-                    cell.fill = idle_fill
-
-        for col in ws.columns:
-            max_len = max(len(str(cell.value or '')) for cell in col)
-            col_letter = get_column_letter(col[0].column)
-            ws.column_dimensions[col_letter].width = max(max_len + 3, 12)
-
-        buf = io.BytesIO()
-        wb.save(buf)
-        return buf.getvalue()
-
-    st.download_button(
-        label="📥 Download Excel MMC (.xlsx)",
-        data=generate_exact_excel(),
-        file_name="MMC_Optimized_Queue.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    thin_border = Border(
+        left=Side(style='thin', color='D9D9D9'),
+        right=Side(style='thin', color='D9D9D9'),
+        top=Side(style='thin', color='D9D9D9'),
+        bottom=Side(style='thin', color='D9D9D9')
     )
+
+    # Header Judul
+    ws.cell(row=1, column=1, value="MAN-MACHINE CHART (MMC) REPORT").font = Font(name="Calibri", size=14, bold=True, color="1F4E79")
+
+    # Super Header (Row 3)
+    ws.cell(row=3, column=1, value="Time (s)").fill = header_fill
+    ws.cell(row=3, column=1).font = text_white
+    ws.merge_cells(start_row=3, start_column=2, end_row=3, end_column=3)
+    ws.cell(row=3, column=2, value="OPERATOR").fill = header_fill
+    ws.cell(row=3, column=2).font = text_white
+    ws.cell(row=3, column=2).alignment = Alignment(horizontal="center")
+
+    col_idx = 4
+    for m in range(1, num_machines + 1):
+        ws.merge_cells(start_row=3, start_column=col_idx, end_row=3, end_column=col_idx+1)
+        c = ws.cell(row=3, column=col_idx, value=f"MACHINE {m}")
+        c.fill = header_fill
+        c.font = text_white
+        c.alignment = Alignment(horizontal="center")
+        col_idx += 2
+
+    # Sub Header (Row 4)
+    ws.cell(row=4, column=1, value="Cum Time").fill = sub_header_fill
+    ws.cell(row=4, column=1).font = text_white
+    ws.cell(row=4, column=2, value="Activity").fill = sub_header_fill
+    ws.cell(row=4, column=2).font = text_white
+    ws.cell(row=4, column=3, value="Time").fill = sub_header_fill
+    ws.cell(row=4, column=3).font = text_white
+
+    col_idx = 4
+    for m in range(1, num_machines + 1):
+        ws.cell(row=4, column=col_idx, value="Activity").fill = sub_header_fill
+        ws.cell(row=4, column=col_idx).font = text_white
+        ws.cell(row=4, column=col_idx+1, value="Time").fill = sub_header_fill
+        ws.cell(row=4, column=col_idx+1).font = text_white
+        col_idx += 2
+
+    # Isi Data (Row 5+)
+    start_row = 5
+    for r_idx, r in enumerate(grid_data):
+        curr_row = start_row + r_idx
+        ws.cell(row=curr_row, column=1, value=r["cum_time"]).font = text_bold
+        ws.cell(row=curr_row, column=2, value=r["op_act"]).font = text_regular
+        ws.cell(row=curr_row, column=3, value=r["op_dur"]).font = text_regular
+
+        if r["op_act"] == "idle":
+            ws.cell(row=curr_row, column=2).fill = idle_fill
+            ws.cell(row=curr_row, column=3).fill = idle_fill
+
+        c_idx = 4
+        for m in range(1, num_machines + 1):
+            m_act = r["mc_data"][m]["act"]
+            m_dur = r["mc_data"][m]["dur"]
+            ws.cell(row=curr_row, column=c_idx, value=m_act).font = text_regular
+            ws.cell(row=curr_row, column=c_idx+1, value=m_dur).font = text_regular
+            if m_act in ["waiting", "idle"]:
+                ws.cell(row=curr_row, column=c_idx).fill = idle_fill
+                ws.cell(row=curr_row, column=c_idx+1).fill = idle_fill
+            c_idx += 2
+
+        for c in range(1, 4 + 2 * num_machines):
+            ws.cell(row=curr_row, column=c).border = thin_border
+
+    for col in ws.columns:
+        max_len = max(len(str(cell.value or '')) for cell in col)
+        col_letter = get_column_letter(col[0].column)
+        ws.column_dimensions[col_letter].width = max(max_len + 3, 12)
+
+    output = io.BytesIO()
+    wb.save(output)
+    output.seek(0)
+    return output
+
+# ==========================================
+# 3. INTERFACE STREAMLIT
+# ==========================================
+st.set_page_config(page_title="Universal MMC Generator", layout="wide")
+
+st.title("⚙️ Universal Man-Machine Chart (MMC) Generator")
+st.markdown("Input urutan proses kerja secara bebas, tentukan durasi dan aktornya. Engine akan menyusun jadwal MMC multi-mesin secara otomatis.")
+
+col_config1, col_config2 = st.columns(2)
+with col_config1:
+    num_machines = st.number_input("Jumlah Mesin", min_value=1, max_value=10, value=2, step=1)
+with col_config2:
+    num_cycles = st.number_input("Jumlah Siklus Simulasi", min_value=1, max_value=10, value=2, step=1)
+
+st.subheader("1. Masukkan Urutan Proses Kerja")
+
+default_data = pd.DataFrame([
+    {"Proses": "Placing component vamp to MC", "Cycle Time (s)": 80.0, "Aktor": "Man"},
+    {"Proses": "Loading", "Cycle Time (s)": 6.0, "Aktor": "Both"},
+    {"Proses": "Hot Press MC", "Cycle Time (s)": 60.0, "Aktor": "Machine"},
+    {"Proses": "Unloading / Take result", "Cycle Time (s)": 6.0, "Aktor": "Both"}
+])
+
+edited_df = st.data_editor(
+    default_data,
+    num_rows="dynamic",
+    column_config={
+        "Proses": st.column_config.TextColumn("Nama Elemen Proses", required=True),
+        "Cycle Time (s)": st.column_config.NumberColumn("Cycle Time (Detik)", min_value=0.1, format="%.1f", required=True),
+        "Aktor": st.column_config.SelectboxColumn("Aktor / Pemeran", options=["Man", "Machine", "Both"], required=True),
+    },
+    use_container_width=True
+)
+
+if st.button("🚀 Generate MMC Chart", type="primary"):
+    user_elements = edited_df.to_dict(orient="records")
+    
+    if not user_elements:
+        st.error("Proses tidak boleh kosong!")
+    else:
+        grid_res = run_universal_mmc_simulation(user_elements, int(num_machines), int(num_cycles))
+        
+        # Format dataframe untuk tampilan Streamlit
+        st.subheader("2. Tampilan Hasil Man-Machine Chart")
+        
+        display_data = []
+        for r in grid_res:
+            row_dict = {
+                "Time (s)": r["cum_time"],
+                "Operator Activity": r["op_act"],
+                "Op Time": r["op_dur"]
+            }
+            for m in range(1, int(num_machines) + 1):
+                row_dict[f"MC {m} Activity"] = r["mc_data"][m]["act"]
+                row_dict[f"MC {m} Time"] = r["mc_data"][m]["dur"]
+            display_data.append(row_dict)
+            
+        df_display = pd.DataFrame(display_data)
+        st.dataframe(df_display, use_container_width=True)
+        
+        # Hitung KPI
+        total_time = grid_res[-1]["cum_time"] if grid_res else 0
+        total_op_idle = sum(r["op_dur"] for r in grid_res if r["op_act"] == "idle")
+        op_utilization = ((total_time - total_op_idle) / total_time * 100) if total_time > 0 else 0
+        
+        st.subheader("3. Ringkasan Kinerja (KPI Summary)")
+        kpi1, kpi2, kpi3 = st.columns(3)
+        kpi1.metric("Total Waktu Siklus (Detik)", f"{total_time:.1f} s")
+        kpi2.metric("Total Operator Idle", f"{total_op_idle:.1f} s")
+        kpi3.metric("Operator Utilization Rate", f"{op_utilization:.1f} %")
+        
+        # Download Excel
+        excel_data = export_mmc_to_excel(grid_res, int(num_machines))
+        st.download_button(
+            label="📥 Download Laporan Excel (.xlsx)",
+            data=excel_data,
+            file_name=f"MMC_Report_{num_machines}MC.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
