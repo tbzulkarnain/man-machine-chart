@@ -45,17 +45,25 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 2. VISITOR COUNTER ENGINE
+# 2. VISITOR COUNTER ENGINE (FIXED & STABLE)
 # ==========================================
+@st.cache_data(ttl=3600)  # Menghindari spam hit ke API saat user interaksi tabel
 def get_global_visitor_count():
     try:
-        url = "https://api.counterapi.dev/v1/footwear-mmc-simulator-tz/visits/up"
+        # Menggunakan endpoint CounterAPI v1 yang terpisah dan terisolasi
+        url = "https://api.counterapi.dev/v1/footwear_mmc_app_2026/visits/up"
         req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
         with urllib.request.urlopen(req, timeout=3) as response:
             data = json.loads(response.read().decode())
-            return data.get('count', '1+')
+            return data.get('count', 1)
     except Exception:
+        # Fallback jika API sedang maintenance
         return "1+"
+
+# Hitungvisitor hanya sekali per sesi tab browser
+if "visited" not in st.session_state:
+    st.session_state.visited = True
+    st.session_state.visitor_count = get_global_visitor_count()
 
 # ==========================================
 # 3. HEADER & USER GUIDE
@@ -311,7 +319,7 @@ else:
 # 8. FOOTER WITH SUBTLE VISITOR COUNTER
 # ==========================================
 st.markdown("---")
-visitor_count = get_global_visitor_count()
+visitor_count = st.session_state.get("visitor_count", "1+")
 st.markdown(
     f'<div class="footer-text">Footwear Man-Machine Chart Simulator | Industrial Engineering Portfolio | 👁️ Total Visitors: <b>{visitor_count}</b></div>', 
     unsafe_allow_html=True
