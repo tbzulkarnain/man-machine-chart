@@ -45,25 +45,21 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 2. VISITOR COUNTER ENGINE (FIXED & STABLE)
+# 2. VISITOR COUNTER ENGINE
 # ==========================================
-@st.cache_data(ttl=3600)  # Menghindari spam hit ke API saat user interaksi tabel
-def get_global_visitor_count():
+def get_visitor_count():
+    url = "https://api.hitcounter.pythonanywhere.com/count/footwear_mmc_sim_2026"
     try:
-        # Menggunakan endpoint CounterAPI v1 yang terpisah dan terisolasi
-        url = "https://api.counterapi.dev/v1/footwear_mmc_app_2026/visits/up"
         req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-        with urllib.request.urlopen(req, timeout=3) as response:
+        with urllib.request.urlopen(req, timeout=4) as response:
             data = json.loads(response.read().decode())
-            return data.get('count', 1)
+            return data.get('count', '1+')
     except Exception:
-        # Fallback jika API sedang maintenance
         return "1+"
 
-# Hitungvisitor hanya sekali per sesi tab browser
-if "visited" not in st.session_state:
-    st.session_state.visited = True
-    st.session_state.visitor_count = get_global_visitor_count()
+# Mengunci eksekusi hit agar hanya dipanggil 1x per sesi tab pengunjung
+if "visitor_count" not in st.session_state:
+    st.session_state.visitor_count = get_visitor_count()
 
 # ==========================================
 # 3. HEADER & USER GUIDE
