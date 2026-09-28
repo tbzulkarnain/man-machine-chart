@@ -315,8 +315,15 @@ else:
 # 8. FOOTER WITH SUBTLE VISITOR COUNTER
 # ==========================================
 st.markdown("---")
-visitor_count = st.session_state.get("visitor_count", "1+")
-st.markdown(
-    f'<div class="footer-text">Footwear Man-Machine Chart Simulator | Industrial Engineering Portfolio | 👁️ Total Visitors: <b>{visitor_count}</b></div>', 
-    unsafe_allow_html=True
-)
+
+# Menggunakan HTML Badge Visitor Counter
+visitor_counter_html = """
+<div style="text-align: center; color: #6B7280; font-size: 13px; padding-top: 10px; padding-bottom: 10px;">
+    Footwear Man-Machine Chart Simulator | Industrial Engineering Portfolio | 
+    <span style="display: inline-block; vertical-align: middle; margin-left: 5px;">
+        <img src="https://hitwebcounter.com/counter/counter.php?page=18249015&style=0007&nbdigits=4&type=page&initCount=1" title="Counter Widget" Alt="Visit Counter" border="0" />
+    </span>
+</div>
+"""
+
+st.components.v1.html(visitor_counter_html, height=50)
